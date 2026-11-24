@@ -1,0 +1,2713 @@
+name: Build Moin Kits 1.0.0 (Universal 1.21.11 & 26.3 Jar)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  # ============================================================================
+  # STEP 1: Build MC 26.3 Jar (Unobfuscated Mojang Mappings, Java 25, Gradle 9.2.1)
+  # ============================================================================
+  build-26_3:
+    name: Compile 26.3 Module
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Generate Project Files (26.3)
+        run: |
+          mkdir -p src/main/java/com/moin/mixin
+          mkdir -p src/main/resources/assets/moin/lang
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  maven { name = "Fabric"; url = "https://maven.fabricmc.net/" }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = "moin-26.3"
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx3G
+          org.gradle.parallel=true
+          org.gradle.configuration-cache=false
+
+          minecraft_version=26.3
+          loader_version=0.18.4
+          loom_version=1.15-SNAPSHOT
+
+          version=1.0.0
+          group=com.moin
+          archives_base_name=moin-1.0.0-mc26.3
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id "net.fabricmc.fabric-loom" version "${loom_version}"
+              id "maven-publish"
+          }
+
+          version = project.version
+          group = project.group
+
+          base {
+              archivesName = project.archives_base_name
+          }
+
+          repositories {
+              maven { url = "https://maven.fabricmc.net/" }
+              mavenCentral()
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              implementation("net.fabricmc.fabric-api:fabric-api:+") {
+                  exclude group: "net.fabricmc", module: "fabric-loader"
+              }
+          }
+
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") {
+                  expand "version": project.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 25
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_25
+              targetCompatibility = JavaVersion.VERSION_25
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/fabric.mod.json
+          {
+            "schemaVersion": 1,
+            "id": "moin",
+            "version": "${version}",
+            "name": "Moin Kits (26.3 & 1.21.11)",
+            "description": "Fast OP kit loader, saver, previewer (/moin) with 10 pre-made PvP/SMP kits, sound effects, and an inventory side drawer.",
+            "authors": ["Moin"],
+            "license": "MIT",
+            "icon": "assets/moin/icon.png",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.moin.MoinClient"]
+            },
+            "mixins": [
+              "moin.mixins.json"
+            ],
+            "depends": {
+              "fabricloader": ">=0.18.0",
+              "minecraft": "26.3",
+              "java": ">=25",
+              "fabric-api": "*"
+            }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/moin.mixins.json
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.moin.mixin",
+            "compatibilityLevel": "JAVA_25",
+            "client": [
+              "InventoryScreenMixin",
+              "CreativeInventoryScreenMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/moin/lang/en_us.json
+          {
+            "key.moin.open_preview": "Open Moin Kit Preview",
+            "key.category.moin.main": "Moin Kits"
+          }
+          EOF
+
+          python3 - << 'PY'
+          import zlib, struct, os
+          os.makedirs("src/main/resources/assets/moin", exist_ok=True)
+          w, h = 128, 128
+          rows = []
+          for y in range(h):
+              row = bytearray([0])
+              for x in range(w):
+                  if x < 8 or x >= 120 or y < 8 or y >= 120:
+                      row.extend([92, 58, 33, 255])
+                  elif (y // 38) % 2 == 1 and 26 <= (y % 38) <= 34:
+                      row.extend([110, 72, 42, 255])
+                  else:
+                      book = (x // 16) % 4
+                      colors = [(185, 55, 55), (55, 130, 185), (65, 165, 85), (210, 165, 45)]
+                      r, g, b = colors[book]
+                      if x % 16 in (0, 15):
+                          r, g, b = 55, 38, 24
+                      row.extend([r, g, b, 255])
+              rows.append(bytes(row))
+          raw = b"".join(rows)
+          def chunk(tag, data):
+              return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", zlib.crc32(tag + data) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+          with open("src/main/resources/assets/moin/icon.png", "wb") as f:
+              f.write(png)
+          PY
+
+          cat << 'EOF' > src/main/java/com/moin/SoundHelper.java
+          package com.moin;
+
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+          import net.minecraft.sounds.SoundEvents;
+
+          public class SoundHelper {
+              public static void playLoad() {
+                  play(SoundEvents.PLAYER_LEVELUP, 1.05f, 0.85f);
+              }
+              public static void playSave() {
+                  play(SoundEvents.ENCHANTMENT_TABLE_USE, 1.15f, 0.90f);
+              }
+              public static void playPreview() {
+                  play(SoundEvents.BOOK_PAGE_TURN, 1.05f, 0.95f);
+              }
+              public static void playDrawerOpen() {
+                  play(SoundEvents.CHEST_OPEN, 1.15f, 0.65f);
+              }
+              public static void playDrawerClose() {
+                  play(SoundEvents.CHEST_CLOSE, 1.15f, 0.65f);
+              }
+              public static void playSelect() {
+                  play(SoundEvents.UI_BUTTON_CLICK.value(), 1.10f, 0.75f);
+              }
+              public static void playDelete() {
+                  play(SoundEvents.ITEM_BREAK, 0.90f, 0.80f);
+              }
+              public static void playError() {
+                  play(SoundEvents.NOTE_BLOCK_BASS.value(), 0.75f, 0.85f);
+              }
+
+              private static void play(net.minecraft.sounds.SoundEvent event, float pitch, float volume) {
+                  Minecraft mc = Minecraft.getInstance();
+                  if (mc != null && mc.getSoundManager() != null && event != null) {
+                      mc.getSoundManager().play(SimpleSoundInstance.forUI(event, pitch, volume));
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/MoinClient.java
+          package com.moin;
+
+          import com.mojang.blaze3d.platform.InputConstants;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+          import net.minecraft.client.KeyMapping;
+          import net.minecraft.client.gui.screens.Screen;
+          import net.minecraft.resources.Identifier;
+          import org.slf4j.Logger;
+          import org.slf4j.LoggerFactory;
+
+          public class MoinClient implements ClientModInitializer {
+              public static final String MOD_ID = "moin";
+              public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+              public static final KeyMapping.Category CATEGORY =
+                  KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MOD_ID, "main"));
+
+              public static KeyMapping openPreviewKey;
+              public static Screen pendingScreen = null;
+              public static boolean drawerOpen = false;
+
+              @Override
+              public void onInitializeClient() {
+                  LOGGER.info("Initializing Moin Kits 1.0.0 for Minecraft 26.3...");
+                  KitConfig.load();
+                  MoinCommand.register();
+
+                  openPreviewKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                      "key.moin.open_preview",
+                      InputConstants.KEY_K,
+                      CATEGORY
+                  ));
+
+                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                      if (pendingScreen != null) {
+                          Screen toOpen = pendingScreen;
+                          pendingScreen = null;
+                          SoundHelper.playPreview();
+                          client.setScreen(toOpen);
+                      }
+                      while (openPreviewKey.consumeClick()) {
+                          if (client.screen == null) {
+                              SoundHelper.playPreview();
+                              client.setScreen(new KitPreviewScreen(null, null));
+                          }
+                      }
+                  });
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/KitConfig.java
+          package com.moin;
+
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import net.fabricmc.loader.api.FabricLoader;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.core.Holder;
+          import net.minecraft.core.RegistryAccess;
+          import net.minecraft.core.component.DataComponents;
+          import net.minecraft.core.registries.BuiltInRegistries;
+          import net.minecraft.core.registries.Registries;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.resources.Identifier;
+          import net.minecraft.server.MinecraftServer;
+          import net.minecraft.server.level.ServerPlayer;
+          import net.minecraft.world.entity.player.Inventory;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.Items;
+          import net.minecraft.world.item.alchemy.PotionContents;
+          import net.minecraft.world.item.enchantment.Enchantment;
+          import net.minecraft.world.item.enchantment.ItemEnchantments;
+
+          import java.io.IOException;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.*;
+
+          public class KitConfig {
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+              private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("moin_kits.json");
+
+              public static KitFile data = new KitFile();
+
+              public static class KitFile {
+                  public LinkedHashMap<String, KitEntry> kits = new LinkedHashMap<>();
+              }
+
+              public static class KitEntry {
+                  public String name;
+                  public List<SlotItem> items = new ArrayList<>();
+
+                  public KitEntry() {}
+                  public KitEntry(String name) { this.name = name; }
+              }
+
+              public static class SlotItem {
+                  public int slot;
+                  public String itemId;
+                  public int count = 1;
+                  public int damage = 0;
+                  public String customName = null;
+                  public String potionId = null;
+                  public LinkedHashMap<String, Integer> enchantments = new LinkedHashMap<>();
+
+                  public SlotItem() {}
+                  public SlotItem(int slot, String itemId, int count) {
+                      this.slot = slot;
+                      this.itemId = itemId;
+                      this.count = count;
+                  }
+
+                  public SlotItem ench(String id, int lvl) {
+                      this.enchantments.put(id, lvl);
+                      return this;
+                  }
+
+                  public SlotItem potion(String id) {
+                      this.potionId = id;
+                      return this;
+                  }
+              }
+
+              public static void load() {
+                  if (Files.exists(CONFIG_PATH)) {
+                      try {
+                          String json = Files.readString(CONFIG_PATH);
+                          KitFile loaded = GSON.fromJson(json, KitFile.class);
+                          if (loaded != null && loaded.kits != null && !loaded.kits.isEmpty()) {
+                              data = loaded;
+                              return;
+                          }
+                      } catch (Exception e) {
+                          MoinClient.LOGGER.error("Failed to read moin_kits.json", e);
+                      }
+                  }
+                  createDefaultKits();
+              }
+
+              public static void save() {
+                  try {
+                      if (CONFIG_PATH.getParent() != null) {
+                          Files.createDirectories(CONFIG_PATH.getParent());
+                      }
+                      Files.writeString(CONFIG_PATH, GSON.toJson(data));
+                  } catch (IOException e) {
+                      MoinClient.LOGGER.error("Failed to write moin_kits.json", e);
+                  }
+              }
+
+              public static void createDefaultKits() {
+                  data = new KitFile();
+
+                  // 1. CPvP (Crystal & Anchor PvP)
+                  KitEntry cpvp = new KitEntry("cpvp");
+                  cpvp.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1).ench("respiration", 3));
+                  cpvp.items.add(new SlotItem(38, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("blast_protection", 4).ench("unbreaking", 3).ench("mending", 1).ench("swift_sneak", 3));
+                  cpvp.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("depth_strider", 3).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  cpvp.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("knockback", 1).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(1, "minecraft:obsidian", 64));
+                  cpvp.items.add(new SlotItem(2, "minecraft:end_crystal", 64));
+                  cpvp.items.add(new SlotItem(3, "minecraft:respawn_anchor", 64));
+                  cpvp.items.add(new SlotItem(4, "minecraft:glowstone", 64));
+                  cpvp.items.add(new SlotItem(5, "minecraft:enchanted_golden_apple", 64));
+                  cpvp.items.add(new SlotItem(6, "minecraft:ender_pearl", 16));
+                  cpvp.items.add(new SlotItem(7, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(8, "minecraft:totem_of_undying", 1));
+                  for (int s = 9; s <= 23; s++) cpvp.items.add(new SlotItem(s, "minecraft:totem_of_undying", 1));
+                  cpvp.items.add(new SlotItem(24, "minecraft:experience_bottle", 64));
+                  cpvp.items.add(new SlotItem(25, "minecraft:experience_bottle", 64));
+                  cpvp.items.add(new SlotItem(26, "minecraft:ender_pearl", 16));
+                  cpvp.items.add(new SlotItem(27, "minecraft:ender_pearl", 16));
+                  cpvp.items.add(new SlotItem(28, "minecraft:obsidian", 64));
+                  cpvp.items.add(new SlotItem(29, "minecraft:end_crystal", 64));
+                  cpvp.items.add(new SlotItem(30, "minecraft:splash_potion", 1).potion("strong_strength"));
+                  cpvp.items.add(new SlotItem(31, "minecraft:splash_potion", 1).potion("strong_swiftness"));
+                  for (int s = 32; s <= 35; s++) cpvp.items.add(new SlotItem(s, "minecraft:totem_of_undying", 1));
+                  data.kits.put("cpvp", cpvp);
+
+                  // 2. Sword PvP
+                  KitEntry sword = new KitEntry("sword");
+                  sword.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("protection", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(40, "minecraft:golden_apple", 16));
+                  sword.items.add(new SlotItem(0, "minecraft:diamond_sword", 1).ench("sharpness", 5).ench("sweeping_edge", 3).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(1, "minecraft:golden_apple", 32));
+                  sword.items.add(new SlotItem(2, "minecraft:cooked_beef", 64));
+                  data.kits.put("sword", sword);
+
+                  // 3. Axe & Shield PvP
+                  KitEntry axe = new KitEntry("axe");
+                  axe.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(40, "minecraft:shield", 1).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(0, "minecraft:diamond_axe", 1).ench("sharpness", 5).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(1, "minecraft:diamond_sword", 1).ench("sharpness", 4).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(2, "minecraft:crossbow", 1).ench("quick_charge", 3).ench("multishot", 1));
+                  axe.items.add(new SlotItem(3, "minecraft:bow", 1).ench("power", 4).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(4, "minecraft:golden_apple", 12));
+                  axe.items.add(new SlotItem(5, "minecraft:cooked_beef", 64));
+                  axe.items.add(new SlotItem(6, "minecraft:shield", 1));
+                  axe.items.add(new SlotItem(9, "minecraft:arrow", 64));
+                  data.kits.put("axe", axe);
+
+                  // 4. NethPot (Netherite Potion PvP)
+                  KitEntry nethpot = new KitEntry("nethpot");
+                  nethpot.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(38, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  nethpot.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("fire_aspect", 2).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(1, "minecraft:ender_pearl", 16));
+                  nethpot.items.add(new SlotItem(2, "minecraft:golden_apple", 64));
+                  nethpot.items.add(new SlotItem(3, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(4, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(5, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(6, "minecraft:splash_potion", 1).potion("strong_swiftness"));
+                  nethpot.items.add(new SlotItem(7, "minecraft:splash_potion", 1).potion("strong_strength"));
+                  nethpot.items.add(new SlotItem(8, "minecraft:potion", 1).potion("long_fire_resistance"));
+                  for (int s = 9; s <= 29; s++) nethpot.items.add(new SlotItem(s, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(30, "minecraft:experience_bottle", 64));
+                  nethpot.items.add(new SlotItem(31, "minecraft:experience_bottle", 64));
+                  nethpot.items.add(new SlotItem(32, "minecraft:splash_potion", 1).potion("strong_swiftness"));
+                  nethpot.items.add(new SlotItem(33, "minecraft:splash_potion", 1).potion("strong_strength"));
+                  nethpot.items.add(new SlotItem(34, "minecraft:ender_pearl", 16));
+                  nethpot.items.add(new SlotItem(35, "minecraft:totem_of_undying", 1));
+                  data.kits.put("nethpot", nethpot);
+
+                  // 5. Mace PvP
+                  KitEntry mace = new KitEntry("mace");
+                  mace.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(38, "minecraft:elytra", 1).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  mace.items.add(new SlotItem(0, "minecraft:mace", 1).ench("density", 5).ench("wind_burst", 3).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(1, "minecraft:mace", 1).ench("breach", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(2, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("unbreaking", 3));
+                  mace.items.add(new SlotItem(3, "minecraft:wind_charge", 64));
+                  mace.items.add(new SlotItem(4, "minecraft:wind_charge", 64));
+                  mace.items.add(new SlotItem(5, "minecraft:firework_rocket", 64));
+                  mace.items.add(new SlotItem(6, "minecraft:enchanted_golden_apple", 32));
+                  mace.items.add(new SlotItem(7, "minecraft:ender_pearl", 16));
+                  mace.items.add(new SlotItem(8, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  for (int s = 9; s <= 14; s++) mace.items.add(new SlotItem(s, "minecraft:wind_charge", 64));
+                  for (int s = 15; s <= 20; s++) mace.items.add(new SlotItem(s, "minecraft:totem_of_undying", 1));
+                  data.kits.put("mace", mace);
+
+                  // 6. UHC Kit
+                  KitEntry uhc = new KitEntry("uhc");
+                  uhc.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("projectile_protection", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 3).ench("feather_falling", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(40, "minecraft:shield", 1));
+                  uhc.items.add(new SlotItem(0, "minecraft:diamond_sword", 1).ench("sharpness", 4).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(1, "minecraft:diamond_axe", 1).ench("efficiency", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(2, "minecraft:bow", 1).ench("power", 4).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(3, "minecraft:golden_apple", 16));
+                  uhc.items.add(new SlotItem(4, "minecraft:water_bucket", 1));
+                  uhc.items.add(new SlotItem(5, "minecraft:lava_bucket", 1));
+                  uhc.items.add(new SlotItem(6, "minecraft:cobweb", 16));
+                  uhc.items.add(new SlotItem(7, "minecraft:cobblestone", 64));
+                  uhc.items.add(new SlotItem(8, "minecraft:oak_planks", 64));
+                  uhc.items.add(new SlotItem(9, "minecraft:diamond_pickaxe", 1).ench("efficiency", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(10, "minecraft:water_bucket", 1));
+                  uhc.items.add(new SlotItem(11, "minecraft:lava_bucket", 1));
+                  uhc.items.add(new SlotItem(12, "minecraft:arrow", 64));
+                  uhc.items.add(new SlotItem(13, "minecraft:cooked_beef", 64));
+                  data.kits.put("uhc", uhc);
+
+                  // 7. Cart PvP (TNT Minecart PvP)
+                  KitEntry cart = new KitEntry("cart");
+                  cart.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(38, "minecraft:netherite_chestplate", 1).ench("blast_protection", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("blast_protection", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  cart.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(1, "minecraft:bow", 1).ench("power", 5).ench("flame", 1).ench("infinity", 1).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(2, "minecraft:rail", 64));
+                  cart.items.add(new SlotItem(3, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(4, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(5, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(6, "minecraft:flint_and_steel", 1));
+                  cart.items.add(new SlotItem(7, "minecraft:golden_apple", 32));
+                  cart.items.add(new SlotItem(8, "minecraft:obsidian", 64));
+                  for (int s = 9; s <= 20; s++) cart.items.add(new SlotItem(s, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(21, "minecraft:arrow", 64));
+                  data.kits.put("cart", cart);
+
+                  // 8. Diamond Classic PvP
+                  KitEntry diamond = new KitEntry("diamond");
+                  diamond.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("protection", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  diamond.items.add(new SlotItem(0, "minecraft:diamond_sword", 1).ench("sharpness", 5).ench("fire_aspect", 2).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(1, "minecraft:bow", 1).ench("power", 5).ench("punch", 2).ench("infinity", 1));
+                  diamond.items.add(new SlotItem(2, "minecraft:golden_apple", 64));
+                  diamond.items.add(new SlotItem(3, "minecraft:ender_pearl", 16));
+                  diamond.items.add(new SlotItem(4, "minecraft:cobblestone", 64));
+                  diamond.items.add(new SlotItem(5, "minecraft:water_bucket", 1));
+                  diamond.items.add(new SlotItem(9, "minecraft:arrow", 64));
+                  data.kits.put("diamond", diamond);
+
+                  // 9. SMP Survival Maxed
+                  KitEntry smp = new KitEntry("smp");
+                  smp.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("respiration", 3).ench("aqua_affinity", 1).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(38, "minecraft:elytra", 1).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("protection", 4).ench("swift_sneak", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("depth_strider", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  smp.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("looting", 3).ench("sweeping_edge", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(1, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("fortune", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(2, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("silk_touch", 1).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(3, "minecraft:netherite_axe", 1).ench("efficiency", 5).ench("sharpness", 5).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(4, "minecraft:netherite_shovel", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(5, "minecraft:firework_rocket", 64));
+                  smp.items.add(new SlotItem(6, "minecraft:golden_carrot", 64));
+                  smp.items.add(new SlotItem(7, "minecraft:ender_chest", 16));
+                  smp.items.add(new SlotItem(8, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  data.kits.put("smp", smp);
+
+                  // 10. Builder Kit
+                  KitEntry builder = new KitEntry("builder");
+                  builder.items.add(new SlotItem(38, "minecraft:elytra", 1).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("feather_falling", 4).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(40, "minecraft:firework_rocket", 64));
+                  builder.items.add(new SlotItem(0, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("silk_touch", 1).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(1, "minecraft:netherite_axe", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(2, "minecraft:netherite_shovel", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(3, "minecraft:scaffolding", 64));
+                  builder.items.add(new SlotItem(4, "minecraft:quartz_block", 64));
+                  builder.items.add(new SlotItem(5, "minecraft:spruce_planks", 64));
+                  builder.items.add(new SlotItem(6, "minecraft:stone_bricks", 64));
+                  builder.items.add(new SlotItem(7, "minecraft:glass", 64));
+                  builder.items.add(new SlotItem(8, "minecraft:lantern", 64));
+                  data.kits.put("builder", builder);
+
+                  save();
+              }
+
+              public static String nextAutoKitName() {
+                  int idx = 1;
+                  while (data.kits.containsKey("kit_" + idx)) {
+                      idx++;
+                  }
+                  return "kit_" + idx;
+              }
+
+              public static ItemStack buildStack(SlotItem s, RegistryAccess registryAccess) {
+                  if (s == null || s.itemId == null || s.itemId.isEmpty()) return ItemStack.EMPTY;
+                  Identifier id = Identifier.tryParse(s.itemId.contains(":") ? s.itemId : "minecraft:" + s.itemId);
+                  if (id == null) return ItemStack.EMPTY;
+
+                  Item item = BuiltInRegistries.ITEM.getValue(id);
+                  if (item == null || item == Items.AIR) return ItemStack.EMPTY;
+
+                  ItemStack stack = new ItemStack(item, Math.max(1, Math.min(99, s.count)));
+                  if (s.damage > 0 && stack.isDamageableItem()) {
+                      stack.setDamageValue(s.damage);
+                  }
+                  if (s.customName != null && !s.customName.isEmpty()) {
+                      stack.set(DataComponents.CUSTOM_NAME, Component.literal(s.customName));
+                  }
+                  if (s.potionId != null && !s.potionId.isEmpty()) {
+                      String cleanPotion = s.potionId.replace("minecraft:", "");
+                      BuiltInRegistries.POTION.listElements()
+                          .filter(h -> h.key().identifier().getPath().equals(cleanPotion))
+                          .findFirst()
+                          .ifPresent(holder -> stack.set(DataComponents.POTION_CONTENTS, new PotionContents(holder)));
+                  }
+                  if (s.enchantments != null && !s.enchantments.isEmpty() && registryAccess != null) {
+                      try {
+                          var enchReg = registryAccess.lookupOrThrow(Registries.ENCHANTMENT);
+                          for (Map.Entry<String, Integer> e : s.enchantments.entrySet()) {
+                              String path = e.getKey().replace("minecraft:", "");
+                              int lvl = e.getValue();
+                              enchReg.listElements()
+                                  .filter(h -> h.key().identifier().getPath().equals(path))
+                                  .findFirst()
+                                  .ifPresent(holder -> stack.enchant(holder, lvl));
+                          }
+                      } catch (Exception ignored) {}
+                  }
+                  return stack;
+              }
+
+              public static String saveKit(Minecraft client, String rawName) {
+                  if (client == null || client.player == null) {
+                      SoundHelper.playError();
+                      return "§cMust be in a world to save a kit!";
+                  }
+                  String key = (rawName == null || rawName.trim().isEmpty())
+                      ? nextAutoKitName()
+                      : rawName.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "_");
+
+                  Inventory inv = client.player.getInventory();
+                  KitEntry entry = new KitEntry(key);
+
+                  for (int slot = 0; slot <= 40; slot++) {
+                      ItemStack stack = inv.getItem(slot);
+                      if (stack == null || stack.isEmpty()) continue;
+
+                      Identifier itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
+                      SlotItem sItem = new SlotItem(slot, itemId.toString(), stack.getCount());
+                      if (stack.isDamaged()) {
+                          sItem.damage = stack.getDamageValue();
+                      }
+                      Component customName = stack.get(DataComponents.CUSTOM_NAME);
+                      if (customName != null) {
+                          sItem.customName = customName.getString();
+                      }
+                      PotionContents pot = stack.get(DataComponents.POTION_CONTENTS);
+                      if (pot != null && pot.potion().isPresent()) {
+                          pot.potion().get().unwrapKey().ifPresent(k -> sItem.potionId = k.identifier().getPath());
+                      }
+                      ItemEnchantments enchs = stack.getEnchantments();
+                      if (enchs != null) {
+                          for (Holder<Enchantment> h : enchs.keySet()) {
+                              int lvl = enchs.getLevel(h);
+                              h.unwrapKey().ifPresent(k -> sItem.enchantments.put(k.identifier().getPath(), lvl));
+                          }
+                      }
+                      entry.items.add(sItem);
+                  }
+
+                  data.kits.put(key, entry);
+                  save();
+                  SoundHelper.playSave();
+                  return "§aSaved kit '§e" + key + "§a' (" + entry.items.size() + " items) to moin_kits.json!";
+              }
+
+              public static String loadKit(Minecraft client, String rawName) {
+                  if (client == null || client.player == null || client.level == null) {
+                      SoundHelper.playError();
+                      return "§cMust be in a world to load a kit!";
+                  }
+                  String key = rawName == null ? "" : rawName.trim().toLowerCase(Locale.ROOT);
+                  KitEntry kit = data.kits.get(key);
+                  if (kit == null) {
+                      SoundHelper.playError();
+                      return "§cKit '" + key + "' not found! Available: " + String.join(", ", data.kits.keySet());
+                  }
+
+                  MinecraftServer server = client.getSingleplayerServer();
+                  if (server != null) {
+                      UUID uuid = client.player.getUUID();
+                      server.execute(() -> {
+                          ServerPlayer sp = server.getPlayerList().getPlayer(uuid);
+                          if (sp != null) {
+                              Inventory sInv = sp.getInventory();
+                              for (int i = 0; i <= 40; i++) {
+                                  sInv.setItem(i, ItemStack.EMPTY);
+                              }
+                              RegistryAccess reg = sp.registryAccess();
+                              for (SlotItem item : kit.items) {
+                                  if (item.slot >= 0 && item.slot <= 40) {
+                                      sInv.setItem(item.slot, buildStack(item, reg));
+                                  }
+                              }
+                              sp.inventoryMenu.broadcastChanges();
+                          }
+                      });
+                      SoundHelper.playLoad();
+                      return "§aCleared inventory & loaded kit '§e" + key + "§a'!";
+                  }
+
+                  if (client.getConnection() != null) {
+                      client.getConnection().sendCommand("clear @s");
+                      for (SlotItem item : kit.items) {
+                          String slotTarget = toMinecraftSlotName(item.slot);
+                          if (slotTarget == null) continue;
+                          String itemSpec = buildGiveSpec(item);
+                          client.getConnection().sendCommand("item replace entity @s " + slotTarget + " with " + itemSpec + " " + item.count);
+                      }
+                      SoundHelper.playLoad();
+                      return "§aSent OP clear & equip commands for kit '§e" + key + "§a'!";
+                  }
+
+                  SoundHelper.playError();
+                  return "§cUnable to load kit: not connected to a server.";
+              }
+
+              private static String toMinecraftSlotName(int slot) {
+                  if (slot >= 0 && slot <= 8) return "hotbar." + slot;
+                  if (slot >= 9 && slot <= 35) return "inventory." + (slot - 9);
+                  return switch (slot) {
+                      case 36 -> "armor.feet";
+                      case 37 -> "armor.legs";
+                      case 38 -> "armor.chest";
+                      case 39 -> "armor.head";
+                      case 40 -> "weapon.offhand";
+                      default -> null;
+                  };
+              }
+
+              private static String buildGiveSpec(SlotItem item) {
+                  String baseId = item.itemId.contains(":") ? item.itemId : "minecraft:" + item.itemId;
+                  List<String> comps = new ArrayList<>();
+                  if (item.enchantments != null && !item.enchantments.isEmpty()) {
+                      List<String> enchParts = new ArrayList<>();
+                      for (Map.Entry<String, Integer> e : item.enchantments.entrySet()) {
+                          String eid = e.getKey().contains(":") ? e.getKey() : "minecraft:" + e.getKey();
+                          enchParts.add("\"" + eid + "\":" + e.getValue());
+                      }
+                      comps.add("minecraft:enchantments={" + String.join(",", enchParts) + "}");
+                  }
+                  if (item.potionId != null && !item.potionId.isEmpty()) {
+                      String pid = item.potionId.contains(":") ? item.potionId : "minecraft:" + item.potionId;
+                      comps.add("minecraft:potion_contents={potion:\"" + pid + "\"}");
+                  }
+                  if (item.customName != null && !item.customName.isEmpty()) {
+                      String escaped = item.customName.replace("\"", "\\\"");
+                      comps.add("minecraft:custom_name='\"" + escaped + "\"'");
+                  }
+                  return comps.isEmpty() ? baseId : baseId + "[" + String.join(",", comps) + "]";
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/MoinCommand.java
+          package com.moin;
+
+          import com.mojang.brigadier.arguments.StringArgumentType;
+          import com.mojang.brigadier.suggestion.SuggestionProvider;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+          import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+          import net.minecraft.commands.SharedSuggestionProvider;
+          import net.minecraft.network.chat.Component;
+
+          public class MoinCommand {
+              private static final SuggestionProvider<FabricClientCommandSource> KIT_SUGGESTIONS =
+                  (context, builder) -> SharedSuggestionProvider.suggest(KitConfig.data.kits.keySet(), builder);
+
+              public static void register() {
+                  ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+                      dispatcher.register(ClientCommandManager.literal("moin")
+                          .executes(ctx -> {
+                              MoinClient.pendingScreen = new KitPreviewScreen(null, null);
+                              return 1;
+                          })
+                          .then(ClientCommandManager.literal("load")
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .suggests(KIT_SUGGESTIONS)
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name");
+                                      String res = KitConfig.loadKit(ctx.getSource().getClient(), name);
+                                      ctx.getSource().sendFeedback(Component.literal("§6[Moin] " + res));
+                                      return 1;
+                                  })))
+                          .then(ClientCommandManager.literal("save")
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name");
+                                      String res = KitConfig.saveKit(ctx.getSource().getClient(), name);
+                                      ctx.getSource().sendFeedback(Component.literal("§6[Moin] " + res));
+                                      return 1;
+                                  })))
+                          .then(ClientCommandManager.literal("preview")
+                              .executes(ctx -> {
+                                  MoinClient.pendingScreen = new KitPreviewScreen(null, null);
+                                  return 1;
+                              })
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .suggests(KIT_SUGGESTIONS)
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name");
+                                      MoinClient.pendingScreen = new KitPreviewScreen(null, name);
+                                      return 1;
+                                  })))
+                          .then(ClientCommandManager.literal("delete")
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .suggests(KIT_SUGGESTIONS)
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name").toLowerCase();
+                                      if (KitConfig.data.kits.remove(name) != null) {
+                                          KitConfig.save();
+                                          SoundHelper.playDelete();
+                                          ctx.getSource().sendFeedback(Component.literal("§6[Moin] §aDeleted kit '§e" + name + "§a'."));
+                                      } else {
+                                          SoundHelper.playError();
+                                          ctx.getSource().sendFeedback(Component.literal("§6[Moin] §cKit '" + name + "' not found."));
+                                      }
+                                      return 1;
+                                  })))
+                      );
+                  });
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/KitDrawerController.java
+          package com.moin;
+
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.Font;
+          import net.minecraft.client.gui.GuiGraphicsExtractor;
+          import net.minecraft.client.gui.screens.Screen;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.Items;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class KitDrawerController {
+              private static final int DRAWER_WIDTH = 114;
+              private static final int DRAWER_HEIGHT = 166;
+              private static int scrollOffset = 0;
+              private static String feedbackText = "";
+              private static long feedbackUntil = 0;
+
+              public static void setFeedback(String msg) {
+                  feedbackText = msg;
+                  feedbackUntil = System.currentTimeMillis() + 3000L;
+              }
+
+              public static void render(Screen screen, GuiGraphicsExtractor graphics, int invLeft, int invTop, int invWidth, int mouseX, int mouseY) {
+                  Minecraft client = Minecraft.getInstance();
+                  if (client == null || client.player == null) return;
+                  Font font = client.font;
+
+                  int tabX = invLeft + invWidth + 2;
+                  int tabY = invTop + 6;
+                  int tabW = 22;
+                  int tabH = 22;
+                  boolean tabHover = mouseX >= tabX && mouseX < tabX + tabW && mouseY >= tabY && mouseY < tabY + tabH;
+
+                  graphics.fill(tabX, tabY, tabX + tabW, tabY + tabH, tabHover ? 0xE03B4D6B : 0xD01C222E);
+                  graphics.renderOutline(tabX, tabY, tabW, tabH, MoinClient.drawerOpen ? 0xFFFFD700 : 0xFF6E85B7);
+                  graphics.item(new ItemStack(Items.CHEST), tabX + 3, tabY + 3);
+
+                  int bookX = tabX;
+                  int bookY = tabY + 25;
+                  boolean bookHover = mouseX >= bookX && mouseX < bookX + tabW && mouseY >= bookY && mouseY < bookY + tabH;
+
+                  graphics.fill(bookX, bookY, bookX + tabW, bookY + tabH, bookHover ? 0xE04E3B28 : 0xD0241C14);
+                  graphics.renderOutline(bookX, bookY, tabW, tabH, bookHover ? 0xFF55FF55 : 0xFFA47551);
+                  graphics.item(new ItemStack(Items.BOOKSHELF), bookX + 3, bookY + 3);
+
+                  if (tabHover) {
+                      graphics.setTooltipForNextFrame(font, Component.literal(
+                          MoinClient.drawerOpen ? "§eClose Moin Kits Drawer" : "§aOpen Moin Kits Drawer"
+                      ), mouseX, mouseY);
+                  } else if (bookHover) {
+                      graphics.setTooltipForNextFrame(font, Component.literal(
+                          "§bQuick Save Kit §7(Bookshelf)"
+                      ), mouseX, mouseY);
+                  }
+
+                  if (!MoinClient.drawerOpen) return;
+
+                  int drawerX = tabX + tabW + 3;
+                  int drawerY = invTop;
+                  if (drawerX + DRAWER_WIDTH > screen.width - 4) {
+                      drawerX = Math.max(4, invLeft - DRAWER_WIDTH - 4);
+                  }
+
+                  graphics.fill(drawerX, drawerY, drawerX + DRAWER_WIDTH, drawerY + DRAWER_HEIGHT, 0xE8141821);
+                  graphics.renderOutline(drawerX, drawerY, DRAWER_WIDTH, DRAWER_HEIGHT, 0xFF5C7AEA);
+
+                  graphics.drawString(font, "§6§lMoin Kits", drawerX + 6, drawerY + 6, 0xFFFFFF, false);
+
+                  int saveBtnX = drawerX + DRAWER_WIDTH - 24;
+                  int saveBtnY = drawerY + 3;
+                  boolean saveBtnHover = mouseX >= saveBtnX && mouseX < saveBtnX + 20 && mouseY >= saveBtnY && mouseY < saveBtnY + 18;
+                  graphics.fill(saveBtnX, saveBtnY, saveBtnX + 20, saveBtnY + 18, saveBtnHover ? 0xFF2E6F40 : 0xFF1F472A);
+                  graphics.renderOutline(saveBtnX, saveBtnY, 20, 18, 0xFF55FF55);
+                  graphics.item(new ItemStack(Items.BOOKSHELF), saveBtnX + 2, saveBtnY + 1);
+
+                  if (saveBtnHover) {
+                      graphics.setTooltipForNextFrame(font, Component.literal("§aSave Current Inv as New Kit"), mouseX, mouseY);
+                  }
+
+                  List<String> keys = new ArrayList<>(KitConfig.data.kits.keySet());
+                  int maxVisible = 6;
+                  if (scrollOffset > Math.max(0, keys.size() - maxVisible)) {
+                      scrollOffset = Math.max(0, keys.size() - maxVisible);
+                  }
+
+                  int listY = drawerY + 24;
+                  for (int i = 0; i < maxVisible; i++) {
+                      int idx = scrollOffset + i;
+                      if (idx >= keys.size()) break;
+                      String kitName = keys.get(idx);
+                      int rowY = listY + i * 20;
+
+                      int loadW = DRAWER_WIDTH - 30;
+                      boolean loadHover = mouseX >= drawerX + 5 && mouseX < drawerX + 5 + loadW && mouseY >= rowY && mouseY < rowY + 18;
+                      graphics.fill(drawerX + 5, rowY, drawerX + 5 + loadW, rowY + 18, loadHover ? 0xFF2B4C7E : 0xFF1F2736);
+                      graphics.renderOutline(drawerX + 5, rowY, loadW, 18, loadHover ? 0xFF88CCFF : 0xFF3E4C63);
+
+                      String display = kitName.length() > 11 ? kitName.substring(0, 10) + ".." : kitName;
+                      graphics.drawString(font, "§f" + display, drawerX + 9, rowY + 5, 0xFFFFFF, false);
+
+                      int prevX = drawerX + 5 + loadW + 2;
+                      boolean prevHover = mouseX >= prevX && mouseX < prevX + 18 && mouseY >= rowY && mouseY < rowY + 18;
+                      graphics.fill(prevX, rowY, prevX + 18, rowY + 18, prevHover ? 0xFF6B5B28 : 0xFF2E2A1F);
+                      graphics.renderOutline(prevX, rowY, 18, 18, prevHover ? 0xFFFFD700 : 0xFF7A6A3A);
+                      graphics.drawString(font, "§e👁", prevX + 4, rowY + 5, 0xFFFFFF, false);
+
+                      if (loadHover) {
+                          graphics.setTooltipForNextFrame(font, Component.literal("§aClick to Load Kit: §e" + kitName), mouseX, mouseY);
+                      } else if (prevHover) {
+                          graphics.setTooltipForNextFrame(font, Component.literal("§ePreview Kit: §f" + kitName), mouseX, mouseY);
+                      }
+                  }
+
+                  if (System.currentTimeMillis() < feedbackUntil && !feedbackText.isEmpty()) {
+                      String shortFb = feedbackText.length() > 19 ? feedbackText.substring(0, 18) + ".." : feedbackText;
+                      graphics.drawString(font, shortFb, drawerX + 5, drawerY + DRAWER_HEIGHT - 13, 0x55FF55, false);
+                  } else {
+                      graphics.drawString(font, "§7Kits: " + keys.size() + " (Scroll)", drawerX + 6, drawerY + DRAWER_HEIGHT - 13, 0xAAAAAA, false);
+                  }
+              }
+
+              public static boolean mouseClicked(Screen screen, int invLeft, int invTop, int invWidth, double mouseX, double mouseY, int button) {
+                  if (button != 0) return false;
+                  Minecraft client = Minecraft.getInstance();
+                  if (client == null || client.player == null) return false;
+
+                  int tabX = invLeft + invWidth + 2;
+                  int tabY = invTop + 6;
+                  int tabW = 22;
+                  int tabH = 22;
+
+                  if (mouseX >= tabX && mouseX < tabX + tabW && mouseY >= tabY && mouseY < tabY + tabH) {
+                      MoinClient.drawerOpen = !MoinClient.drawerOpen;
+                      if (MoinClient.drawerOpen) SoundHelper.playDrawerOpen();
+                      else SoundHelper.playDrawerClose();
+                      return true;
+                  }
+
+                  int bookY = tabY + 25;
+                  if (mouseX >= tabX && mouseX < tabX + tabW && mouseY >= bookY && mouseY < bookY + tabH) {
+                      String autoName = KitConfig.nextAutoKitName();
+                      String res = KitConfig.saveKit(client, autoName);
+                      setFeedback("§aSaved " + autoName + "!");
+                      client.player.displayClientMessage(Component.literal("§6[Moin] " + res), false);
+                      return true;
+                  }
+
+                  if (!MoinClient.drawerOpen) return false;
+
+                  int drawerX = tabX + tabW + 3;
+                  int drawerY = invTop;
+                  if (drawerX + DRAWER_WIDTH > screen.width - 4) {
+                      drawerX = Math.max(4, invLeft - DRAWER_WIDTH - 4);
+                  }
+
+                  int saveBtnX = drawerX + DRAWER_WIDTH - 24;
+                  int saveBtnY = drawerY + 3;
+                  if (mouseX >= saveBtnX && mouseX < saveBtnX + 20 && mouseY >= saveBtnY && mouseY < saveBtnY + 18) {
+                      String autoName = KitConfig.nextAutoKitName();
+                      String res = KitConfig.saveKit(client, autoName);
+                      setFeedback("§aSaved " + autoName + "!");
+                      client.player.displayClientMessage(Component.literal("§6[Moin] " + res), false);
+                      return true;
+                  }
+
+                  List<String> keys = new ArrayList<>(KitConfig.data.kits.keySet());
+                  int maxVisible = 6;
+                  int listY = drawerY + 24;
+                  for (int i = 0; i < maxVisible; i++) {
+                      int idx = scrollOffset + i;
+                      if (idx >= keys.size()) break;
+                      String kitName = keys.get(idx);
+                      int rowY = listY + i * 20;
+
+                      int loadW = DRAWER_WIDTH - 30;
+                      if (mouseX >= drawerX + 5 && mouseX < drawerX + 5 + loadW && mouseY >= rowY && mouseY < rowY + 18) {
+                          String res = KitConfig.loadKit(client, kitName);
+                          setFeedback("§aLoaded " + kitName);
+                          client.player.displayClientMessage(Component.literal("§6[Moin] " + res), false);
+                          return true;
+                      }
+
+                      int prevX = drawerX + 5 + loadW + 2;
+                      if (mouseX >= prevX && mouseX < prevX + 18 && mouseY >= rowY && mouseY < rowY + 18) {
+                          SoundHelper.playPreview();
+                          client.setScreen(new KitPreviewScreen(screen, kitName));
+                          return true;
+                      }
+                  }
+
+                  return mouseX >= drawerX && mouseX < drawerX + DRAWER_WIDTH && mouseY >= drawerY && mouseY < drawerY + DRAWER_HEIGHT;
+              }
+
+              public static boolean mouseScrolled(Screen screen, int invLeft, int invTop, int invWidth, double mouseX, double mouseY, double verticalAmount) {
+                  if (!MoinClient.drawerOpen) return false;
+                  int tabX = invLeft + invWidth + 2;
+                  int drawerX = tabX + 25;
+                  if (drawerX + DRAWER_WIDTH > screen.width - 4) {
+                      drawerX = Math.max(4, invLeft - DRAWER_WIDTH - 4);
+                  }
+                  if (mouseX >= drawerX && mouseX < drawerX + DRAWER_WIDTH && mouseY >= invTop && mouseY < invTop + DRAWER_HEIGHT) {
+                      int total = KitConfig.data.kits.size();
+                      if (verticalAmount < 0 && scrollOffset + 6 < total) {
+                          scrollOffset++;
+                          SoundHelper.playSelect();
+                      } else if (verticalAmount > 0 && scrollOffset > 0) {
+                          scrollOffset--;
+                          SoundHelper.playSelect();
+                      }
+                      return true;
+                  }
+                  return false;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/KitPreviewScreen.java
+          package com.moin;
+
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.GuiGraphicsExtractor;
+          import net.minecraft.client.gui.components.Button;
+          import net.minecraft.client.gui.components.EditBox;
+          import net.minecraft.client.gui.screens.Screen;
+          import net.minecraft.core.RegistryAccess;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.item.ItemStack;
+
+          import java.util.*;
+
+          public class KitPreviewScreen extends Screen {
+              private final Screen parent;
+              private String selectedKit;
+              private EditBox nameBox;
+              private String statusMsg = "§7Previewing kit slots (Armor, Off-hand, Inventory, Hotbar)";
+              private final Map<Integer, ItemStack> previewItems = new HashMap<>();
+              private List<String> kitList = new ArrayList<>();
+              private int tabPage = 0;
+
+              public KitPreviewScreen(Screen parent, String initialKit) {
+                  super(Component.literal("Moin Kit Preview"));
+                  this.parent = parent;
+                  this.kitList = new ArrayList<>(KitConfig.data.kits.keySet());
+                  if (initialKit != null && KitConfig.data.kits.containsKey(initialKit.toLowerCase(Locale.ROOT))) {
+                      this.selectedKit = initialKit.toLowerCase(Locale.ROOT);
+                  } else if (!this.kitList.isEmpty()) {
+                      this.selectedKit = this.kitList.get(0);
+                  } else {
+                      this.selectedKit = "cpvp";
+                  }
+              }
+
+              private void rebuildSlots() {
+                  previewItems.clear();
+                  KitConfig.KitEntry kit = KitConfig.data.kits.get(selectedKit);
+                  if (kit == null) return;
+                  Minecraft mc = Minecraft.getInstance();
+                  RegistryAccess reg = (mc != null && mc.level != null) ? mc.level.registryAccess() : null;
+                  for (KitConfig.SlotItem s : kit.items) {
+                      previewItems.put(s.slot, KitConfig.buildStack(s, reg));
+                  }
+              }
+
+              @Override
+              protected void init() {
+                  this.kitList = new ArrayList<>(KitConfig.data.kits.keySet());
+                  if ((this.selectedKit == null || !this.kitList.contains(this.selectedKit)) && !this.kitList.isEmpty()) {
+                      this.selectedKit = this.kitList.get(0);
+                  }
+                  rebuildSlots();
+
+                  int cx = this.width / 2;
+                  this.addRenderableWidget(Button.builder(Component.literal("← Back"), b -> {
+                      SoundHelper.playDrawerClose();
+                      this.onClose();
+                  }).bounds(10, 8, 56, 20).build());
+
+                  this.addRenderableWidget(Button.builder(Component.literal("Reset 10 Kits"), b -> {
+                      KitConfig.createDefaultKits();
+                      SoundHelper.playSave();
+                      statusMsg = "§aRestored all 10 pre-made kits!";
+                      this.rebuildWidgets();
+                  }).bounds(this.width - 92, 8, 82, 20).build());
+
+                  int perPage = 5;
+                  int totalPages = Math.max(1, (int) Math.ceil(kitList.size() / (double) perPage));
+                  if (tabPage >= totalPages) tabPage = 0;
+
+                  int start = tabPage * perPage;
+                  int end = Math.min(kitList.size(), start + perPage);
+                  int tabW = 54;
+                  int startX = cx - ((end - start) * (tabW + 3)) / 2;
+
+                  if (totalPages > 1) {
+                      this.addRenderableWidget(Button.builder(Component.literal("<"), b -> {
+                          tabPage = (tabPage + totalPages - 1) % totalPages;
+                          SoundHelper.playSelect();
+                          this.rebuildWidgets();
+                      }).bounds(startX - 22, 32, 18, 18).build());
+                  }
+
+                  for (int i = start; i < end; i++) {
+                      String kName = kitList.get(i);
+                      boolean active = kName.equals(selectedKit);
+                      this.addRenderableWidget(Button.builder(Component.literal(active ? "§e[" + kName + "]" : kName), b -> {
+                          this.selectedKit = kName;
+                          if (this.nameBox != null) this.nameBox.setValue(kName);
+                          SoundHelper.playPreview();
+                          rebuildSlots();
+                          this.rebuildWidgets();
+                      }).bounds(startX + (i - start) * (tabW + 3), 32, tabW, 18).build());
+                  }
+
+                  if (totalPages > 1) {
+                      this.addRenderableWidget(Button.builder(Component.literal(">"), b -> {
+                          tabPage = (tabPage + 1) % totalPages;
+                          SoundHelper.playSelect();
+                          this.rebuildWidgets();
+                      }).bounds(startX + (end - start) * (tabW + 3) + 3, 32, 18, 18).build());
+                  }
+
+                  int bottomY = this.height - 32;
+                  this.addRenderableWidget(Button.builder(Component.literal("§a✔ Load Kit"), b -> {
+                      statusMsg = KitConfig.loadKit(this.minecraft, selectedKit);
+                  }).bounds(cx - 165, bottomY, 76, 20).build());
+
+                  this.nameBox = new EditBox(this.font, cx - 84, bottomY, 80, 20, Component.literal("Kit Name"));
+                  this.nameBox.setValue(selectedKit != null ? selectedKit : "mykit");
+                  this.addRenderableWidget(this.nameBox);
+
+                  this.addRenderableWidget(Button.builder(Component.literal("§b📚 Save Kit"), b -> {
+                      String target = nameBox.getValue().trim();
+                      statusMsg = KitConfig.saveKit(this.minecraft, target);
+                      this.selectedKit = target.isEmpty() ? selectedKit : target.toLowerCase(Locale.ROOT);
+                      this.rebuildWidgets();
+                  }).bounds(cx + 1, bottomY, 82, 20).build());
+
+                  this.addRenderableWidget(Button.builder(Component.literal("§cDelete"), b -> {
+                      if (selectedKit != null && KitConfig.data.kits.remove(selectedKit) != null) {
+                          KitConfig.save();
+                          SoundHelper.playDelete();
+                          statusMsg = "§eDeleted kit '" + selectedKit + "'.";
+                          this.selectedKit = null;
+                          this.rebuildWidgets();
+                      } else {
+                          SoundHelper.playError();
+                      }
+                  }).bounds(cx + 88, bottomY, 64, 20).build());
+              }
+
+              @Override
+              public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+                  graphics.fill(0, 0, this.width, this.height, 0xC80F131A);
+                  super.extractRenderState(graphics, mouseX, mouseY, delta);
+
+                  int cx = this.width / 2;
+                  graphics.drawCenteredString(this.font, "§6§lMoin Kit Preview: §e" + (selectedKit != null ? selectedKit.toUpperCase(Locale.ROOT) : "NONE"), cx, 12, 0xFFFFFF);
+                  graphics.drawCenteredString(this.font, statusMsg, cx, this.height - 48, 0xFFFFFF);
+
+                  int slotSize = 18;
+                  int gridStartX = cx - (9 * slotSize) / 2;
+                  int startY = 60;
+                  ItemStack hovered = ItemStack.EMPTY;
+
+                  int[] equipSlots = {39, 38, 37, 36, 40};
+                  String[] labels = {"H", "C", "L", "B", "Off"};
+                  int equipX = cx - (5 * (slotSize + 4)) / 2;
+                  for (int i = 0; i < equipSlots.length; i++) {
+                      int sx = equipX + i * (slotSize + 4);
+                      ItemStack st = drawSlot(graphics, sx, startY, equipSlots[i], labels[i], mouseX, mouseY, 0xFF28354A);
+                      if (!st.isEmpty()) hovered = st;
+                  }
+
+                  int invY = startY + 24;
+                  for (int r = 0; r < 3; r++) {
+                      for (int c = 0; c < 9; c++) {
+                          int idx = 9 + r * 9 + c;
+                          ItemStack st = drawSlot(graphics, gridStartX + c * slotSize, invY + r * slotSize, idx, null, mouseX, mouseY, 0xFF1D222B);
+                          if (!st.isEmpty()) hovered = st;
+                      }
+                  }
+
+                  int hotbarY = invY + 3 * slotSize + 5;
+                  for (int c = 0; c < 9; c++) {
+                      ItemStack st = drawSlot(graphics, gridStartX + c * slotSize, hotbarY, c, String.valueOf(c + 1), mouseX, mouseY, 0xFF253040);
+                      if (!st.isEmpty()) hovered = st;
+                  }
+
+                  if (!hovered.isEmpty()) {
+                      graphics.setTooltipForNextFrame(this.font, hovered, mouseX, mouseY);
+                  }
+              }
+
+              private ItemStack drawSlot(GuiGraphicsExtractor graphics, int x, int y, int slot, String hint, int mouseX, int mouseY, int bg) {
+                  boolean hover = mouseX >= x && mouseX < x + 18 && mouseY >= y && mouseY < y + 18;
+                  graphics.fill(x, y, x + 17, y + 17, hover ? 0xFF4A6FA5 : bg);
+                  graphics.renderOutline(x, y, 17, 17, hover ? 0xFFFFD700 : 0xFF4F5D75);
+                  ItemStack st = previewItems.getOrDefault(slot, ItemStack.EMPTY);
+                  if (!st.isEmpty()) {
+                      graphics.item(st, x + 1, y + 1);
+                      graphics.itemDecorations(this.font, st, x + 1, y + 1);
+                      return hover ? st : ItemStack.EMPTY;
+                  } else if (hint != null) {
+                      graphics.drawCenteredString(this.font, "§8" + hint, x + 9, y + 5, 0x666666);
+                  }
+                  return ItemStack.EMPTY;
+              }
+
+              @Override
+              public void onClose() {
+                  if (this.minecraft != null) {
+                      this.minecraft.setScreen(this.parent);
+                  }
+              }
+
+              @Override
+              public boolean isPauseScreen() {
+                  return false;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/mixin/InventoryScreenMixin.java
+          package com.moin.mixin;
+
+          import com.moin.KitDrawerController;
+          import net.minecraft.client.gui.GuiGraphicsExtractor;
+          import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+          import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+          import net.minecraft.client.input.MouseButtonEvent;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.entity.player.Inventory;
+          import net.minecraft.world.inventory.InventoryMenu;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(InventoryScreen.class)
+          public abstract class InventoryScreenMixin extends AbstractContainerScreen<InventoryMenu> {
+              protected InventoryScreenMixin(InventoryMenu menu, Inventory inv, Component title) {
+                  super(menu, inv, title);
+              }
+
+              @Inject(method = "extractRenderState", at = @At("TAIL"))
+              private void moin$renderDrawer(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+                  KitDrawerController.render(this, graphics, this.leftPos, this.topPos, this.imageWidth, mouseX, mouseY);
+              }
+
+              @Inject(method = "mouseClicked", at = @At("HEAD"), cancellable = true)
+              private void moin$mouseClicked(MouseButtonEvent event, boolean doubleClick, CallbackInfoReturnable<Boolean> cir) {
+                  if (KitDrawerController.mouseClicked(this, this.leftPos, this.topPos, this.imageWidth, event.x(), event.y(), event.button())) {
+                      cir.setReturnValue(true);
+                  }
+              }
+
+              @Override
+              public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+                  if (KitDrawerController.mouseScrolled(this, this.leftPos, this.topPos, this.imageWidth, mouseX, mouseY, verticalAmount)) {
+                      return true;
+                  }
+                  return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/mixin/CreativeInventoryScreenMixin.java
+          package com.moin.mixin;
+
+          import com.moin.KitDrawerController;
+          import net.minecraft.client.gui.GuiGraphicsExtractor;
+          import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+          import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
+          import net.minecraft.client.input.MouseButtonEvent;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.entity.player.Inventory;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(CreativeModeInventoryScreen.class)
+          public abstract class CreativeInventoryScreenMixin extends AbstractContainerScreen<CreativeModeInventoryScreen.ItemPickerMenu> {
+              protected CreativeInventoryScreenMixin(CreativeModeInventoryScreen.ItemPickerMenu menu, Inventory inv, Component title) {
+                  super(menu, inv, title);
+              }
+
+              @Inject(method = "extractRenderState", at = @At("TAIL"))
+              private void moin$renderDrawer(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+                  KitDrawerController.render(this, graphics, this.leftPos, this.topPos, this.imageWidth, mouseX, mouseY);
+              }
+
+              @Inject(method = "mouseClicked", at = @At("HEAD"), cancellable = true)
+              private void moin$mouseClicked(MouseButtonEvent event, boolean doubleClick, CallbackInfoReturnable<Boolean> cir) {
+                  if (KitDrawerController.mouseClicked(this, this.leftPos, this.topPos, this.imageWidth, event.x(), event.y(), event.button())) {
+                      cir.setReturnValue(true);
+                  }
+              }
+
+              @Override
+              public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+                  if (KitDrawerController.mouseScrolled(this, this.leftPos, this.topPos, this.imageWidth, mouseX, mouseY, verticalAmount)) {
+                      return true;
+                  }
+                  return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+              }
+          }
+          EOF
+
+      - name: Build 26.3 Jar
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Stage 26.3 Jar
+        run: |
+          mkdir -p staged_jars
+          cp build/libs/moin-1.0.0-mc26.3.jar staged_jars/moin-26.3.jar
+
+      - name: Upload 26.3 Staged Jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-26_3
+          path: staged_jars/moin-26.3.jar
+
+  # ============================================================================
+  # STEP 2: Build MC 1.21.11 & Bundle Both into ONE Single Universal .jar
+  # ============================================================================
+  build-universal-jar:
+    name: Build Single Universal Jar (1.21.11 + 26.3)
+    needs: build-26_3
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Download 26.3 Staged Jar
+        uses: actions/download-artifact@v4
+        with:
+          name: staged-26_3
+          path: libs
+
+      - name: Generate Project Files (1.21.11 + Universal Wrapper)
+        run: |
+          mkdir -p src/main/java/com/moin/mixin
+          mkdir -p src/main/resources/assets/moin/lang
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = 'moin'
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2G
+          org.gradle.parallel=true
+          org.gradle.configuration-cache=false
+
+          minecraft_version=1.21.11
+          yarn_mappings=1.21.11+build.3
+          loader_version=0.18.4
+          loom_version=1.14-SNAPSHOT
+
+          version=1.0.0
+          group=com.moin
+          archives_base_name=moin-1.0.0-mc1.21.11+26.3
+
+          fabric_api_version=0.141.3+1.21.11
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'fabric-loom' version "${loom_version}"
+              id 'maven-publish'
+          }
+
+          version = project.version
+          group = project.group
+
+          base {
+              archivesName = project.archives_base_name
+          }
+
+          repositories {
+              maven { url = "https://maven.fabricmc.net/" }
+              mavenCentral()
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+              include files("libs/moin-26.3.jar")
+          }
+
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") {
+                  expand "version": project.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 21
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/fabric.mod.json
+          {
+            "schemaVersion": 1,
+            "id": "moin",
+            "version": "${version}",
+            "name": "Moin Kits (1.21.11 & 26.3)",
+            "description": "Fast OP kit loader, saver, previewer (/moin) with 10 pre-made PvP/SMP kits, sound effects, and an inventory side drawer.",
+            "authors": ["Moin"],
+            "license": "MIT",
+            "icon": "assets/moin/icon.png",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.moin.MoinClient"]
+            },
+            "mixins": [
+              "moin.mixins.json"
+            ],
+            "depends": {
+              "fabricloader": ">=0.18.0",
+              "minecraft": "1.21.11",
+              "java": ">=21",
+              "fabric-api": "*"
+            }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/moin.mixins.json
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.moin.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": [
+              "InventoryScreenMixin",
+              "CreativeInventoryScreenMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/moin/lang/en_us.json
+          {
+            "key.moin.open_preview": "Open Moin Kit Preview",
+            "key.category.moin.main": "Moin Kits"
+          }
+          EOF
+
+          python3 - << 'PY'
+          import zlib, struct, os
+          os.makedirs("src/main/resources/assets/moin", exist_ok=True)
+          w, h = 128, 128
+          rows = []
+          for y in range(h):
+              row = bytearray([0])
+              for x in range(w):
+                  if x < 8 or x >= 120 or y < 8 or y >= 120:
+                      row.extend([92, 58, 33, 255])
+                  elif (y // 38) % 2 == 1 and 26 <= (y % 38) <= 34:
+                      row.extend([110, 72, 42, 255])
+                  else:
+                      book = (x // 16) % 4
+                      colors = [(185, 55, 55), (55, 130, 185), (65, 165, 85), (210, 165, 45)]
+                      r, g, b = colors[book]
+                      if x % 16 in (0, 15):
+                          r, g, b = 55, 38, 24
+                      row.extend([r, g, b, 255])
+              rows.append(bytes(row))
+          raw = b"".join(rows)
+          def chunk(tag, data):
+              return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", zlib.crc32(tag + data) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+          with open("src/main/resources/assets/moin/icon.png", "wb") as f:
+              f.write(png)
+          PY
+
+          cat << 'EOF' > src/main/java/com/moin/SoundHelper.java
+          package com.moin;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.sound.PositionedSoundInstance;
+          import net.minecraft.sound.SoundEvent;
+          import net.minecraft.sound.SoundEvents;
+
+          public class SoundHelper {
+              public static void playLoad() {
+                  play(SoundEvents.ENTITY_PLAYER_LEVELUP, 1.05f, 0.85f);
+              }
+              public static void playSave() {
+                  play(SoundEvents.BLOCK_ENCHANTMENT_TABLE_USE, 1.15f, 0.90f);
+              }
+              public static void playPreview() {
+                  play(SoundEvents.ITEM_BOOK_PAGE_TURN, 1.05f, 0.95f);
+              }
+              public static void playDrawerOpen() {
+                  play(SoundEvents.BLOCK_CHEST_OPEN, 1.15f, 0.65f);
+              }
+              public static void playDrawerClose() {
+                  play(SoundEvents.BLOCK_CHEST_CLOSE, 1.15f, 0.65f);
+              }
+              public static void playSelect() {
+                  play(SoundEvents.UI_BUTTON_CLICK.value(), 1.10f, 0.75f);
+              }
+              public static void playDelete() {
+                  play(SoundEvents.ENTITY_ITEM_BREAK, 0.90f, 0.80f);
+              }
+              public static void playError() {
+                  play(SoundEvents.BLOCK_NOTE_BLOCK_BASS.value(), 0.75f, 0.85f);
+              }
+
+              private static void play(SoundEvent event, float pitch, float volume) {
+                  MinecraftClient mc = MinecraftClient.getInstance();
+                  if (mc != null && mc.getSoundManager() != null && event != null) {
+                      mc.getSoundManager().play(PositionedSoundInstance.master(event, pitch, volume));
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/MoinClient.java
+          package com.moin;
+
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.client.util.InputUtil;
+          import net.minecraft.util.Identifier;
+          import org.lwjgl.glfw.GLFW;
+          import org.slf4j.Logger;
+          import org.slf4j.LoggerFactory;
+
+          public class MoinClient implements ClientModInitializer {
+              public static final String MOD_ID = "moin";
+              public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+              public static final KeyBinding.Category CATEGORY =
+                  KeyBinding.Category.create(Identifier.of(MOD_ID, "main"));
+
+              public static KeyBinding openPreviewKey;
+              public static Screen pendingScreen = null;
+              public static boolean drawerOpen = false;
+
+              @Override
+              public void onInitializeClient() {
+                  LOGGER.info("Initializing Moin Kits 1.0.0 for Minecraft 1.21.11...");
+                  KitConfig.load();
+                  MoinCommand.register();
+
+                  openPreviewKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                      "key.moin.open_preview",
+                      InputUtil.Type.KEYSYM,
+                      GLFW.GLFW_KEY_K,
+                      CATEGORY
+                  ));
+
+                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                      if (pendingScreen != null) {
+                          Screen toOpen = pendingScreen;
+                          pendingScreen = null;
+                          SoundHelper.playPreview();
+                          client.setScreen(toOpen);
+                      }
+                      while (openPreviewKey.wasPressed()) {
+                          if (client.currentScreen == null) {
+                              SoundHelper.playPreview();
+                              client.setScreen(new KitPreviewScreen(null, null));
+                          }
+                      }
+                  });
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/KitConfig.java
+          package com.moin;
+
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import net.fabricmc.loader.api.FabricLoader;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.component.DataComponentTypes;
+          import net.minecraft.component.type.ItemEnchantmentsComponent;
+          import net.minecraft.component.type.PotionContentsComponent;
+          import net.minecraft.enchantment.Enchantment;
+          import net.minecraft.entity.player.PlayerInventory;
+          import net.minecraft.item.Item;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.item.Items;
+          import net.minecraft.potion.Potion;
+          import net.minecraft.registry.DynamicRegistryManager;
+          import net.minecraft.registry.Registries;
+          import net.minecraft.registry.RegistryKeys;
+          import net.minecraft.registry.entry.RegistryEntry;
+          import net.minecraft.server.MinecraftServer;
+          import net.minecraft.server.network.ServerPlayerEntity;
+          import net.minecraft.text.Text;
+          import net.minecraft.util.Identifier;
+
+          import java.io.IOException;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.*;
+
+          public class KitConfig {
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+              private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("moin_kits.json");
+
+              public static KitFile data = new KitFile();
+
+              public static class KitFile {
+                  public LinkedHashMap<String, KitEntry> kits = new LinkedHashMap<>();
+              }
+
+              public static class KitEntry {
+                  public String name;
+                  public List<SlotItem> items = new ArrayList<>();
+
+                  public KitEntry() {}
+                  public KitEntry(String name) { this.name = name; }
+              }
+
+              public static class SlotItem {
+                  public int slot;
+                  public String itemId;
+                  public int count = 1;
+                  public int damage = 0;
+                  public String customName = null;
+                  public String potionId = null;
+                  public LinkedHashMap<String, Integer> enchantments = new LinkedHashMap<>();
+
+                  public SlotItem() {}
+                  public SlotItem(int slot, String itemId, int count) {
+                      this.slot = slot;
+                      this.itemId = itemId;
+                      this.count = count;
+                  }
+
+                  public SlotItem ench(String id, int lvl) {
+                      this.enchantments.put(id, lvl);
+                      return this;
+                  }
+
+                  public SlotItem potion(String id) {
+                      this.potionId = id;
+                      return this;
+                  }
+              }
+
+              public static void load() {
+                  if (Files.exists(CONFIG_PATH)) {
+                      try {
+                          String json = Files.readString(CONFIG_PATH);
+                          KitFile loaded = GSON.fromJson(json, KitFile.class);
+                          if (loaded != null && loaded.kits != null && !loaded.kits.isEmpty()) {
+                              data = loaded;
+                              return;
+                          }
+                      } catch (Exception e) {
+                          MoinClient.LOGGER.error("Failed to read moin_kits.json", e);
+                      }
+                  }
+                  createDefaultKits();
+              }
+
+              public static void save() {
+                  try {
+                      if (CONFIG_PATH.getParent() != null) {
+                          Files.createDirectories(CONFIG_PATH.getParent());
+                      }
+                      Files.writeString(CONFIG_PATH, GSON.toJson(data));
+                  } catch (IOException e) {
+                      MoinClient.LOGGER.error("Failed to write moin_kits.json", e);
+                  }
+              }
+
+              public static void createDefaultKits() {
+                  data = new KitFile();
+
+                  // 1. CPvP (Crystal & Anchor PvP)
+                  KitEntry cpvp = new KitEntry("cpvp");
+                  cpvp.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1).ench("respiration", 3));
+                  cpvp.items.add(new SlotItem(38, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("blast_protection", 4).ench("unbreaking", 3).ench("mending", 1).ench("swift_sneak", 3));
+                  cpvp.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("depth_strider", 3).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  cpvp.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("knockback", 1).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(1, "minecraft:obsidian", 64));
+                  cpvp.items.add(new SlotItem(2, "minecraft:end_crystal", 64));
+                  cpvp.items.add(new SlotItem(3, "minecraft:respawn_anchor", 64));
+                  cpvp.items.add(new SlotItem(4, "minecraft:glowstone", 64));
+                  cpvp.items.add(new SlotItem(5, "minecraft:enchanted_golden_apple", 64));
+                  cpvp.items.add(new SlotItem(6, "minecraft:ender_pearl", 16));
+                  cpvp.items.add(new SlotItem(7, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  cpvp.items.add(new SlotItem(8, "minecraft:totem_of_undying", 1));
+                  for (int s = 9; s <= 23; s++) cpvp.items.add(new SlotItem(s, "minecraft:totem_of_undying", 1));
+                  cpvp.items.add(new SlotItem(24, "minecraft:experience_bottle", 64));
+                  cpvp.items.add(new SlotItem(25, "minecraft:experience_bottle", 64));
+                  cpvp.items.add(new SlotItem(26, "minecraft:ender_pearl", 16));
+                  cpvp.items.add(new SlotItem(27, "minecraft:ender_pearl", 16));
+                  cpvp.items.add(new SlotItem(28, "minecraft:obsidian", 64));
+                  cpvp.items.add(new SlotItem(29, "minecraft:end_crystal", 64));
+                  cpvp.items.add(new SlotItem(30, "minecraft:splash_potion", 1).potion("strong_strength"));
+                  cpvp.items.add(new SlotItem(31, "minecraft:splash_potion", 1).potion("strong_swiftness"));
+                  for (int s = 32; s <= 35; s++) cpvp.items.add(new SlotItem(s, "minecraft:totem_of_undying", 1));
+                  data.kits.put("cpvp", cpvp);
+
+                  // 2. Sword PvP
+                  KitEntry sword = new KitEntry("sword");
+                  sword.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("protection", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(40, "minecraft:golden_apple", 16));
+                  sword.items.add(new SlotItem(0, "minecraft:diamond_sword", 1).ench("sharpness", 5).ench("sweeping_edge", 3).ench("unbreaking", 3));
+                  sword.items.add(new SlotItem(1, "minecraft:golden_apple", 32));
+                  sword.items.add(new SlotItem(2, "minecraft:cooked_beef", 64));
+                  data.kits.put("sword", sword);
+
+                  // 3. Axe & Shield PvP
+                  KitEntry axe = new KitEntry("axe");
+                  axe.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 3).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(40, "minecraft:shield", 1).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(0, "minecraft:diamond_axe", 1).ench("sharpness", 5).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(1, "minecraft:diamond_sword", 1).ench("sharpness", 4).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(2, "minecraft:crossbow", 1).ench("quick_charge", 3).ench("multishot", 1));
+                  axe.items.add(new SlotItem(3, "minecraft:bow", 1).ench("power", 4).ench("unbreaking", 3));
+                  axe.items.add(new SlotItem(4, "minecraft:golden_apple", 12));
+                  axe.items.add(new SlotItem(5, "minecraft:cooked_beef", 64));
+                  axe.items.add(new SlotItem(6, "minecraft:shield", 1));
+                  axe.items.add(new SlotItem(9, "minecraft:arrow", 64));
+                  data.kits.put("axe", axe);
+
+                  // 4. NethPot (Netherite Potion PvP)
+                  KitEntry nethpot = new KitEntry("nethpot");
+                  nethpot.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(38, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  nethpot.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("fire_aspect", 2).ench("unbreaking", 3).ench("mending", 1));
+                  nethpot.items.add(new SlotItem(1, "minecraft:ender_pearl", 16));
+                  nethpot.items.add(new SlotItem(2, "minecraft:golden_apple", 64));
+                  nethpot.items.add(new SlotItem(3, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(4, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(5, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(6, "minecraft:splash_potion", 1).potion("strong_swiftness"));
+                  nethpot.items.add(new SlotItem(7, "minecraft:splash_potion", 1).potion("strong_strength"));
+                  nethpot.items.add(new SlotItem(8, "minecraft:potion", 1).potion("long_fire_resistance"));
+                  for (int s = 9; s <= 29; s++) nethpot.items.add(new SlotItem(s, "minecraft:splash_potion", 1).potion("strong_healing"));
+                  nethpot.items.add(new SlotItem(30, "minecraft:experience_bottle", 64));
+                  nethpot.items.add(new SlotItem(31, "minecraft:experience_bottle", 64));
+                  nethpot.items.add(new SlotItem(32, "minecraft:splash_potion", 1).potion("strong_swiftness"));
+                  nethpot.items.add(new SlotItem(33, "minecraft:splash_potion", 1).potion("strong_strength"));
+                  nethpot.items.add(new SlotItem(34, "minecraft:ender_pearl", 16));
+                  nethpot.items.add(new SlotItem(35, "minecraft:totem_of_undying", 1));
+                  data.kits.put("nethpot", nethpot);
+
+                  // 5. Mace PvP
+                  KitEntry mace = new KitEntry("mace");
+                  mace.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(38, "minecraft:elytra", 1).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  mace.items.add(new SlotItem(0, "minecraft:mace", 1).ench("density", 5).ench("wind_burst", 3).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(1, "minecraft:mace", 1).ench("breach", 4).ench("unbreaking", 3).ench("mending", 1));
+                  mace.items.add(new SlotItem(2, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("unbreaking", 3));
+                  mace.items.add(new SlotItem(3, "minecraft:wind_charge", 64));
+                  mace.items.add(new SlotItem(4, "minecraft:wind_charge", 64));
+                  mace.items.add(new SlotItem(5, "minecraft:firework_rocket", 64));
+                  mace.items.add(new SlotItem(6, "minecraft:enchanted_golden_apple", 32));
+                  mace.items.add(new SlotItem(7, "minecraft:ender_pearl", 16));
+                  mace.items.add(new SlotItem(8, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  for (int s = 9; s <= 14; s++) mace.items.add(new SlotItem(s, "minecraft:wind_charge", 64));
+                  for (int s = 15; s <= 20; s++) mace.items.add(new SlotItem(s, "minecraft:totem_of_undying", 1));
+                  data.kits.put("mace", mace);
+
+                  // 6. UHC Kit
+                  KitEntry uhc = new KitEntry("uhc");
+                  uhc.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("projectile_protection", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 3).ench("feather_falling", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(40, "minecraft:shield", 1));
+                  uhc.items.add(new SlotItem(0, "minecraft:diamond_sword", 1).ench("sharpness", 4).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(1, "minecraft:diamond_axe", 1).ench("efficiency", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(2, "minecraft:bow", 1).ench("power", 4).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(3, "minecraft:golden_apple", 16));
+                  uhc.items.add(new SlotItem(4, "minecraft:water_bucket", 1));
+                  uhc.items.add(new SlotItem(5, "minecraft:lava_bucket", 1));
+                  uhc.items.add(new SlotItem(6, "minecraft:cobweb", 16));
+                  uhc.items.add(new SlotItem(7, "minecraft:cobblestone", 64));
+                  uhc.items.add(new SlotItem(8, "minecraft:oak_planks", 64));
+                  uhc.items.add(new SlotItem(9, "minecraft:diamond_pickaxe", 1).ench("efficiency", 3).ench("unbreaking", 3));
+                  uhc.items.add(new SlotItem(10, "minecraft:water_bucket", 1));
+                  uhc.items.add(new SlotItem(11, "minecraft:lava_bucket", 1));
+                  uhc.items.add(new SlotItem(12, "minecraft:arrow", 64));
+                  uhc.items.add(new SlotItem(13, "minecraft:cooked_beef", 64));
+                  data.kits.put("uhc", uhc);
+
+                  // 7. Cart PvP (TNT Minecart PvP)
+                  KitEntry cart = new KitEntry("cart");
+                  cart.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(38, "minecraft:netherite_chestplate", 1).ench("blast_protection", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("blast_protection", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  cart.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(1, "minecraft:bow", 1).ench("power", 5).ench("flame", 1).ench("infinity", 1).ench("unbreaking", 3));
+                  cart.items.add(new SlotItem(2, "minecraft:rail", 64));
+                  cart.items.add(new SlotItem(3, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(4, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(5, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(6, "minecraft:flint_and_steel", 1));
+                  cart.items.add(new SlotItem(7, "minecraft:golden_apple", 32));
+                  cart.items.add(new SlotItem(8, "minecraft:obsidian", 64));
+                  for (int s = 9; s <= 20; s++) cart.items.add(new SlotItem(s, "minecraft:tnt_minecart", 1));
+                  cart.items.add(new SlotItem(21, "minecraft:arrow", 64));
+                  data.kits.put("cart", cart);
+
+                  // 8. Diamond Classic PvP
+                  KitEntry diamond = new KitEntry("diamond");
+                  diamond.items.add(new SlotItem(39, "minecraft:diamond_helmet", 1).ench("protection", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(38, "minecraft:diamond_chestplate", 1).ench("protection", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(37, "minecraft:diamond_leggings", 1).ench("protection", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(36, "minecraft:diamond_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  diamond.items.add(new SlotItem(0, "minecraft:diamond_sword", 1).ench("sharpness", 5).ench("fire_aspect", 2).ench("unbreaking", 3));
+                  diamond.items.add(new SlotItem(1, "minecraft:bow", 1).ench("power", 5).ench("punch", 2).ench("infinity", 1));
+                  diamond.items.add(new SlotItem(2, "minecraft:golden_apple", 64));
+                  diamond.items.add(new SlotItem(3, "minecraft:ender_pearl", 16));
+                  diamond.items.add(new SlotItem(4, "minecraft:cobblestone", 64));
+                  diamond.items.add(new SlotItem(5, "minecraft:water_bucket", 1));
+                  diamond.items.add(new SlotItem(9, "minecraft:arrow", 64));
+                  data.kits.put("diamond", diamond);
+
+                  // 9. SMP Survival Maxed
+                  KitEntry smp = new KitEntry("smp");
+                  smp.items.add(new SlotItem(39, "minecraft:netherite_helmet", 1).ench("protection", 4).ench("respiration", 3).ench("aqua_affinity", 1).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(38, "minecraft:elytra", 1).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(37, "minecraft:netherite_leggings", 1).ench("protection", 4).ench("swift_sneak", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("protection", 4).ench("feather_falling", 4).ench("depth_strider", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(40, "minecraft:totem_of_undying", 1));
+                  smp.items.add(new SlotItem(0, "minecraft:netherite_sword", 1).ench("sharpness", 5).ench("looting", 3).ench("sweeping_edge", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(1, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("fortune", 3).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(2, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("silk_touch", 1).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(3, "minecraft:netherite_axe", 1).ench("efficiency", 5).ench("sharpness", 5).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(4, "minecraft:netherite_shovel", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  smp.items.add(new SlotItem(5, "minecraft:firework_rocket", 64));
+                  smp.items.add(new SlotItem(6, "minecraft:golden_carrot", 64));
+                  smp.items.add(new SlotItem(7, "minecraft:ender_chest", 16));
+                  smp.items.add(new SlotItem(8, "minecraft:netherite_chestplate", 1).ench("protection", 4).ench("unbreaking", 3).ench("mending", 1));
+                  data.kits.put("smp", smp);
+
+                  // 10. Builder Kit
+                  KitEntry builder = new KitEntry("builder");
+                  builder.items.add(new SlotItem(38, "minecraft:elytra", 1).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(36, "minecraft:netherite_boots", 1).ench("feather_falling", 4).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(40, "minecraft:firework_rocket", 64));
+                  builder.items.add(new SlotItem(0, "minecraft:netherite_pickaxe", 1).ench("efficiency", 5).ench("silk_touch", 1).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(1, "minecraft:netherite_axe", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(2, "minecraft:netherite_shovel", 1).ench("efficiency", 5).ench("unbreaking", 3).ench("mending", 1));
+                  builder.items.add(new SlotItem(3, "minecraft:scaffolding", 64));
+                  builder.items.add(new SlotItem(4, "minecraft:quartz_block", 64));
+                  builder.items.add(new SlotItem(5, "minecraft:spruce_planks", 64));
+                  builder.items.add(new SlotItem(6, "minecraft:stone_bricks", 64));
+                  builder.items.add(new SlotItem(7, "minecraft:glass", 64));
+                  builder.items.add(new SlotItem(8, "minecraft:lantern", 64));
+                  data.kits.put("builder", builder);
+
+                  save();
+              }
+
+              public static String nextAutoKitName() {
+                  int idx = 1;
+                  while (data.kits.containsKey("kit_" + idx)) {
+                      idx++;
+                  }
+                  return "kit_" + idx;
+              }
+
+              public static ItemStack buildStack(SlotItem s, DynamicRegistryManager registryManager) {
+                  if (s == null || s.itemId == null || s.itemId.isEmpty()) return ItemStack.EMPTY;
+                  Identifier id = Identifier.tryParse(s.itemId.contains(":") ? s.itemId : "minecraft:" + s.itemId);
+                  if (id == null) return ItemStack.EMPTY;
+
+                  Item item = Registries.ITEM.get(id);
+                  if (item == Items.AIR) return ItemStack.EMPTY;
+
+                  ItemStack stack = new ItemStack(item, Math.max(1, Math.min(99, s.count)));
+                  if (s.damage > 0 && stack.isDamageable()) {
+                      stack.setDamage(s.damage);
+                  }
+                  if (s.customName != null && !s.customName.isEmpty()) {
+                      stack.set(DataComponents.CUSTOM_NAME, Text.literal(s.customName));
+                  }
+                  if (s.potionId != null && !s.potionId.isEmpty()) {
+                      String cleanPotion = s.potionId.replace("minecraft:", "");
+                      Optional<RegistryEntry.Reference<Potion>> potEntry = Registries.POTION.streamEntries()
+                          .filter(e -> e.registryKey().getValue().getPath().equals(cleanPotion))
+                          .findFirst();
+                      potEntry.ifPresent(entry -> stack.set(DataComponents.POTION_CONTENTS, new PotionContentsComponent(entry)));
+                  }
+                  if (s.enchantments != null && !s.enchantments.isEmpty() && registryManager != null) {
+                      try {
+                          var enchReg = registryManager.getOrThrow(RegistryKeys.ENCHANTMENT);
+                          for (Map.Entry<String, Integer> e : s.enchantments.entrySet()) {
+                              String path = e.getKey().replace("minecraft:", "");
+                              int lvl = e.getValue();
+                              enchReg.streamEntries()
+                                  .filter(h -> h.registryKey().getValue().getPath().equals(path))
+                                  .findFirst()
+                                  .ifPresent(holder -> stack.addEnchantment(holder, lvl));
+                          }
+                      } catch (Exception ignored) {}
+                  }
+                  return stack;
+              }
+
+              public static String saveKit(MinecraftClient client, String rawName) {
+                  if (client == null || client.player == null) {
+                      SoundHelper.playError();
+                      return "§cMust be in a world to save a kit!";
+                  }
+                  String key = (rawName == null || rawName.trim().isEmpty())
+                      ? nextAutoKitName()
+                      : rawName.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "_");
+
+                  PlayerInventory inv = client.player.getInventory();
+                  KitEntry entry = new KitEntry(key);
+
+                  for (int slot = 0; slot <= 40; slot++) {
+                      ItemStack stack = inv.getStack(slot);
+                      if (stack == null || stack.isEmpty()) continue;
+
+                      Identifier itemId = Registries.ITEM.getId(stack.getItem());
+                      SlotItem sItem = new SlotItem(slot, itemId.toString(), stack.getCount());
+                      if (stack.isDamaged()) {
+                          sItem.damage = stack.getDamage();
+                      }
+                      Text customName = stack.getCustomName();
+                      if (customName != null) {
+                          sItem.customName = customName.getString();
+                      }
+                      PotionContentsComponent pot = stack.get(DataComponents.POTION_CONTENTS);
+                      if (pot != null && pot.potion().isPresent()) {
+                          pot.potion().get().getKey().ifPresent(k -> sItem.potionId = k.getValue().getPath());
+                      }
+                      ItemEnchantmentsComponent enchs = stack.getEnchantments();
+                      if (enchs != null) {
+                          for (RegistryEntry<Enchantment> h : enchs.getEnchantments()) {
+                              int lvl = enchs.getLevel(h);
+                              h.getKey().ifPresent(k -> sItem.enchantments.put(k.getValue().getPath(), lvl));
+                          }
+                      }
+                      entry.items.add(sItem);
+                  }
+
+                  data.kits.put(key, entry);
+                  save();
+                  SoundHelper.playSave();
+                  return "§aSaved kit '§e" + key + "§a' (" + entry.items.size() + " items) to moin_kits.json!";
+              }
+
+              public static String loadKit(MinecraftClient client, String rawName) {
+                  if (client == null || client.player == null || client.world == null) {
+                      SoundHelper.playError();
+                      return "§cMust be in a world to load a kit!";
+                  }
+                  String key = rawName == null ? "" : rawName.trim().toLowerCase(Locale.ROOT);
+                  KitEntry kit = data.kits.get(key);
+                  if (kit == null) {
+                      SoundHelper.playError();
+                      return "§cKit '" + key + "' not found! Available: " + String.join(", ", data.kits.keySet());
+                  }
+
+                  MinecraftServer server = client.getServer();
+                  if (server != null) {
+                      UUID uuid = client.player.getUuid();
+                      server.execute(() -> {
+                          ServerPlayerEntity sp = server.getPlayerManager().getPlayer(uuid);
+                          if (sp != null) {
+                              PlayerInventory sInv = sp.getInventory();
+                              for (int i = 0; i <= 40; i++) {
+                                  sInv.setStack(i, ItemStack.EMPTY);
+                              }
+                              DynamicRegistryManager reg = sp.getRegistryManager();
+                              for (SlotItem item : kit.items) {
+                                  if (item.slot >= 0 && item.slot <= 40) {
+                                      sInv.setStack(item.slot, buildStack(item, reg));
+                                  }
+                              }
+                              sp.playerScreenHandler.sendContentUpdates();
+                          }
+                      });
+                      SoundHelper.playLoad();
+                      return "§aCleared inventory & loaded kit '§e" + key + "§a'!";
+                  }
+
+                  if (client.player.networkHandler != null) {
+                      client.player.networkHandler.sendChatCommand("clear @s");
+                      for (SlotItem item : kit.items) {
+                          String slotTarget = toMinecraftSlotName(item.slot);
+                          if (slotTarget == null) continue;
+                          String itemSpec = buildGiveSpec(item);
+                          client.player.networkHandler.sendChatCommand("item replace entity @s " + slotTarget + " with " + itemSpec + " " + item.count);
+                      }
+                      SoundHelper.playLoad();
+                      return "§aSent OP clear & equip commands for kit '§e" + key + "§a'!";
+                  }
+
+                  SoundHelper.playError();
+                  return "§cUnable to load kit: not connected to a server.";
+              }
+
+              private static String toMinecraftSlotName(int slot) {
+                  if (slot >= 0 && slot <= 8) return "hotbar." + slot;
+                  if (slot >= 9 && slot <= 35) return "inventory." + (slot - 9);
+                  return switch (slot) {
+                      case 36 -> "armor.feet";
+                      case 37 -> "armor.legs";
+                      case 38 -> "armor.chest";
+                      case 39 -> "armor.head";
+                      case 40 -> "weapon.offhand";
+                      default -> null;
+                  };
+              }
+
+              private static String buildGiveSpec(SlotItem item) {
+                  String baseId = item.itemId.contains(":") ? item.itemId : "minecraft:" + item.itemId;
+                  List<String> comps = new ArrayList<>();
+                  if (item.enchantments != null && !item.enchantments.isEmpty()) {
+                      List<String> enchParts = new ArrayList<>();
+                      for (Map.Entry<String, Integer> e : item.enchantments.entrySet()) {
+                          String eid = e.getKey().contains(":") ? e.getKey() : "minecraft:" + e.getKey();
+                          enchParts.add("\"" + eid + "\":" + e.getValue());
+                      }
+                      comps.add("minecraft:enchantments={" + String.join(",", enchParts) + "}");
+                  }
+                  if (item.potionId != null && !item.potionId.isEmpty()) {
+                      String pid = item.potionId.contains(":") ? item.potionId : "minecraft:" + item.potionId;
+                      comps.add("minecraft:potion_contents={potion:\"" + pid + "\"}");
+                  }
+                  if (item.customName != null && !item.customName.isEmpty()) {
+                      String escaped = item.customName.replace("\"", "\\\"");
+                      comps.add("minecraft:custom_name='\"" + escaped + "\"'");
+                  }
+                  return comps.isEmpty() ? baseId : baseId + "[" + String.join(",", comps) + "]";
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/MoinCommand.java
+          package com.moin;
+
+          import com.mojang.brigadier.arguments.StringArgumentType;
+          import com.mojang.brigadier.suggestion.SuggestionProvider;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+          import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+          import net.minecraft.command.CommandSource;
+          import net.minecraft.text.Text;
+
+          public class MoinCommand {
+              private static final SuggestionProvider<FabricClientCommandSource> KIT_SUGGESTIONS =
+                  (context, builder) -> CommandSource.suggestMatching(KitConfig.data.kits.keySet(), builder);
+
+              public static void register() {
+                  ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+                      dispatcher.register(ClientCommandManager.literal("moin")
+                          .executes(ctx -> {
+                              MoinClient.pendingScreen = new KitPreviewScreen(null, null);
+                              return 1;
+                          })
+                          .then(ClientCommandManager.literal("load")
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .suggests(KIT_SUGGESTIONS)
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name");
+                                      String res = KitConfig.loadKit(ctx.getSource().getClient(), name);
+                                      ctx.getSource().sendFeedback(Text.literal("§6[Moin] " + res));
+                                      return 1;
+                                  })))
+                          .then(ClientCommandManager.literal("save")
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name");
+                                      String res = KitConfig.saveKit(ctx.getSource().getClient(), name);
+                                      ctx.getSource().sendFeedback(Text.literal("§6[Moin] " + res));
+                                      return 1;
+                                  })))
+                          .then(ClientCommandManager.literal("preview")
+                              .executes(ctx -> {
+                                  MoinClient.pendingScreen = new KitPreviewScreen(null, null);
+                                  return 1;
+                              })
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .suggests(KIT_SUGGESTIONS)
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name");
+                                      MoinClient.pendingScreen = new KitPreviewScreen(null, name);
+                                      return 1;
+                                  })))
+                          .then(ClientCommandManager.literal("delete")
+                              .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                  .suggests(KIT_SUGGESTIONS)
+                                  .executes(ctx -> {
+                                      String name = StringArgumentType.getString(ctx, "name").toLowerCase();
+                                      if (KitConfig.data.kits.remove(name) != null) {
+                                          KitConfig.save();
+                                          SoundHelper.playDelete();
+                                          ctx.getSource().sendFeedback(Text.literal("§6[Moin] §aDeleted kit '§e" + name + "§a'."));
+                                      } else {
+                                          SoundHelper.playError();
+                                          ctx.getSource().sendFeedback(Text.literal("§6[Moin] §cKit '" + name + "' not found."));
+                                      }
+                                      return 1;
+                                  })))
+                      );
+                  });
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/KitDrawerController.java
+          package com.moin;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.font.TextRenderer;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.item.Items;
+          import net.minecraft.text.Text;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class KitDrawerController {
+              private static final int DRAWER_WIDTH = 114;
+              private static final int DRAWER_HEIGHT = 166;
+              private static int scrollOffset = 0;
+              private static String feedbackText = "";
+              private static long feedbackUntil = 0;
+
+              public static void setFeedback(String msg) {
+                  feedbackText = msg;
+                  feedbackUntil = System.currentTimeMillis() + 3000L;
+              }
+
+              public static void render(Screen screen, DrawContext context, int invLeft, int invTop, int invWidth, int mouseX, int mouseY) {
+                  MinecraftClient client = MinecraftClient.getInstance();
+                  if (client == null || client.player == null) return;
+                  TextRenderer font = client.textRenderer;
+
+                  int tabX = invLeft + invWidth + 2;
+                  int tabY = invTop + 6;
+                  int tabW = 22;
+                  int tabH = 22;
+                  boolean tabHover = mouseX >= tabX && mouseX < tabX + tabW && mouseY >= tabY && mouseY < tabY + tabH;
+
+                  context.fill(tabX, tabY, tabX + tabW, tabY + tabH, tabHover ? 0xE03B4D6B : 0xD01C222E);
+                  context.drawStrokedRectangle(tabX, tabY, tabW, tabH, MoinClient.drawerOpen ? 0xFFFFD700 : 0xFF6E85B7);
+                  context.drawItem(new ItemStack(Items.CHEST), tabX + 3, tabY + 3);
+
+                  int bookX = tabX;
+                  int bookY = tabY + 25;
+                  boolean bookHover = mouseX >= bookX && mouseX < bookX + tabW && mouseY >= bookY && mouseY < bookY + tabH;
+
+                  context.fill(bookX, bookY, bookX + tabW, bookY + tabH, bookHover ? 0xE04E3B28 : 0xD0241C14);
+                  context.drawStrokedRectangle(bookX, bookY, tabW, tabH, bookHover ? 0xFF55FF55 : 0xFFA47551);
+                  context.drawItem(new ItemStack(Items.BOOKSHELF), bookX + 3, bookY + 3);
+
+                  if (tabHover) {
+                      context.drawTooltip(font, Text.literal(
+                          MoinClient.drawerOpen ? "§eClose Moin Kits Drawer" : "§aOpen Moin Kits Drawer"
+                      ), mouseX, mouseY);
+                  } else if (bookHover) {
+                      context.drawTooltip(font, Text.literal(
+                          "§bQuick Save Kit §7(Bookshelf)"
+                      ), mouseX, mouseY);
+                  }
+
+                  if (!MoinClient.drawerOpen) return;
+
+                  int drawerX = tabX + tabW + 3;
+                  int drawerY = invTop;
+                  if (drawerX + DRAWER_WIDTH > screen.width - 4) {
+                      drawerX = Math.max(4, invLeft - DRAWER_WIDTH - 4);
+                  }
+
+                  context.fill(drawerX, drawerY, drawerX + DRAWER_WIDTH, drawerY + DRAWER_HEIGHT, 0xE8141821);
+                  context.drawStrokedRectangle(drawerX, drawerY, DRAWER_WIDTH, DRAWER_HEIGHT, 0xFF5C7AEA);
+
+                  context.drawText(font, "§6§lMoin Kits", drawerX + 6, drawerY + 6, 0xFFFFFF, false);
+
+                  int saveBtnX = drawerX + DRAWER_WIDTH - 24;
+                  int saveBtnY = drawerY + 3;
+                  boolean saveBtnHover = mouseX >= saveBtnX && mouseX < saveBtnX + 20 && mouseY >= saveBtnY && mouseY < saveBtnY + 18;
+                  context.fill(saveBtnX, saveBtnY, saveBtnX + 20, saveBtnY + 18, saveBtnHover ? 0xFF2E6F40 : 0xFF1F472A);
+                  context.drawStrokedRectangle(saveBtnX, saveBtnY, 20, 18, 0xFF55FF55);
+                  context.drawItem(new ItemStack(Items.BOOKSHELF), saveBtnX + 2, saveBtnY + 1);
+
+                  if (saveBtnHover) {
+                      context.drawTooltip(font, Text.literal("§aSave Current Inv as New Kit"), mouseX, mouseY);
+                  }
+
+                  List<String> keys = new ArrayList<>(KitConfig.data.kits.keySet());
+                  int maxVisible = 6;
+                  if (scrollOffset > Math.max(0, keys.size() - maxVisible)) {
+                      scrollOffset = Math.max(0, keys.size() - maxVisible);
+                  }
+
+                  int listY = drawerY + 24;
+                  for (int i = 0; i < maxVisible; i++) {
+                      int idx = scrollOffset + i;
+                      if (idx >= keys.size()) break;
+                      String kitName = keys.get(idx);
+                      int rowY = listY + i * 20;
+
+                      int loadW = DRAWER_WIDTH - 30;
+                      boolean loadHover = mouseX >= drawerX + 5 && mouseX < drawerX + 5 + loadW && mouseY >= rowY && mouseY < rowY + 18;
+                      context.fill(drawerX + 5, rowY, drawerX + 5 + loadW, rowY + 18, loadHover ? 0xFF2B4C7E : 0xFF1F2736);
+                      context.drawStrokedRectangle(drawerX + 5, rowY, loadW, 18, loadHover ? 0xFF88CCFF : 0xFF3E4C63);
+
+                      String display = kitName.length() > 11 ? kitName.substring(0, 10) + ".." : kitName;
+                      context.drawText(font, "§f" + display, drawerX + 9, rowY + 5, 0xFFFFFF, false);
+
+                      int prevX = drawerX + 5 + loadW + 2;
+                      boolean prevHover = mouseX >= prevX && mouseX < prevX + 18 && mouseY >= rowY && mouseY < rowY + 18;
+                      context.fill(prevX, rowY, prevX + 18, rowY + 18, prevHover ? 0xFF6B5B28 : 0xFF2E2A1F);
+                      context.drawStrokedRectangle(prevX, rowY, 18, 18, prevHover ? 0xFFFFD700 : 0xFF7A6A3A);
+                      context.drawText(font, "§e👁", prevX + 4, rowY + 5, 0xFFFFFF, false);
+
+                      if (loadHover) {
+                          context.drawTooltip(font, Text.literal("§aClick to Load Kit: §e" + kitName), mouseX, mouseY);
+                      } else if (prevHover) {
+                          context.drawTooltip(font, Text.literal("§ePreview Kit: §f" + kitName), mouseX, mouseY);
+                      }
+                  }
+
+                  if (System.currentTimeMillis() < feedbackUntil && !feedbackText.isEmpty()) {
+                      String shortFb = feedbackText.length() > 19 ? feedbackText.substring(0, 18) + ".." : feedbackText;
+                      context.drawText(font, shortFb, drawerX + 5, drawerY + DRAWER_HEIGHT - 13, 0x55FF55, false);
+                  } else {
+                      context.drawText(font, "§7Kits: " + keys.size() + " (Scroll)", drawerX + 6, drawerY + DRAWER_HEIGHT - 13, 0xAAAAAA, false);
+                  }
+              }
+
+              public static boolean mouseClicked(Screen screen, int invLeft, int invTop, int invWidth, double mouseX, double mouseY, int button) {
+                  if (button != 0) return false;
+                  MinecraftClient client = MinecraftClient.getInstance();
+                  if (client == null || client.player == null) return false;
+
+                  int tabX = invLeft + invWidth + 2;
+                  int tabY = invTop + 6;
+                  int tabW = 22;
+                  int tabH = 22;
+
+                  if (mouseX >= tabX && mouseX < tabX + tabW && mouseY >= tabY && mouseY < tabY + tabH) {
+                      MoinClient.drawerOpen = !MoinClient.drawerOpen;
+                      if (MoinClient.drawerOpen) SoundHelper.playDrawerOpen();
+                      else SoundHelper.playDrawerClose();
+                      return true;
+                  }
+
+                  int bookY = tabY + 25;
+                  if (mouseX >= tabX && mouseX < tabX + tabW && mouseY >= bookY && mouseY < bookY + tabH) {
+                      String autoName = KitConfig.nextAutoKitName();
+                      String res = KitConfig.saveKit(client, autoName);
+                      setFeedback("§aSaved " + autoName + "!");
+                      client.player.sendMessage(Text.literal("§6[Moin] " + res), false);
+                      return true;
+                  }
+
+                  if (!MoinClient.drawerOpen) return false;
+
+                  int drawerX = tabX + tabW + 3;
+                  int drawerY = invTop;
+                  if (drawerX + DRAWER_WIDTH > screen.width - 4) {
+                      drawerX = Math.max(4, invLeft - DRAWER_WIDTH - 4);
+                  }
+
+                  int saveBtnX = drawerX + DRAWER_WIDTH - 24;
+                  int saveBtnY = drawerY + 3;
+                  if (mouseX >= saveBtnX && mouseX < saveBtnX + 20 && mouseY >= saveBtnY && mouseY < saveBtnY + 18) {
+                      String autoName = KitConfig.nextAutoKitName();
+                      String res = KitConfig.saveKit(client, autoName);
+                      setFeedback("§aSaved " + autoName + "!");
+                      client.player.sendMessage(Text.literal("§6[Moin] " + res), false);
+                      return true;
+                  }
+
+                  List<String> keys = new ArrayList<>(KitConfig.data.kits.keySet());
+                  int maxVisible = 6;
+                  int listY = drawerY + 24;
+                  for (int i = 0; i < maxVisible; i++) {
+                      int idx = scrollOffset + i;
+                      if (idx >= keys.size()) break;
+                      String kitName = keys.get(idx);
+                      int rowY = listY + i * 20;
+
+                      int loadW = DRAWER_WIDTH - 30;
+                      if (mouseX >= drawerX + 5 && mouseX < drawerX + 5 + loadW && mouseY >= rowY && mouseY < rowY + 18) {
+                          String res = KitConfig.loadKit(client, kitName);
+                          setFeedback("§aLoaded " + kitName);
+                          client.player.sendMessage(Text.literal("§6[Moin] " + res), false);
+                          return true;
+                      }
+
+                      int prevX = drawerX + 5 + loadW + 2;
+                      if (mouseX >= prevX && mouseX < prevX + 18 && mouseY >= rowY && mouseY < rowY + 18) {
+                          SoundHelper.playPreview();
+                          client.setScreen(new KitPreviewScreen(screen, kitName));
+                          return true;
+                      }
+                  }
+
+                  return mouseX >= drawerX && mouseX < drawerX + DRAWER_WIDTH && mouseY >= drawerY && mouseY < drawerY + DRAWER_HEIGHT;
+              }
+
+              public static boolean mouseScrolled(Screen screen, int invLeft, int invTop, int invWidth, double mouseX, double mouseY, double verticalAmount) {
+                  if (!MoinClient.drawerOpen) return false;
+                  int tabX = invLeft + invWidth + 2;
+                  int drawerX = tabX + 25;
+                  if (drawerX + DRAWER_WIDTH > screen.width - 4) {
+                      drawerX = Math.max(4, invLeft - DRAWER_WIDTH - 4);
+                  }
+                  if (mouseX >= drawerX && mouseX < drawerX + DRAWER_WIDTH && mouseY >= invTop && mouseY < invTop + DRAWER_HEIGHT) {
+                      int total = KitConfig.data.kits.size();
+                      if (verticalAmount < 0 && scrollOffset + 6 < total) {
+                          scrollOffset++;
+                          SoundHelper.playSelect();
+                      } else if (verticalAmount > 0 && scrollOffset > 0) {
+                          scrollOffset--;
+                          SoundHelper.playSelect();
+                      }
+                      return true;
+                  }
+                  return false;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/KitPreviewScreen.java
+          package com.moin;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.client.gui.widget.TextFieldWidget;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.registry.DynamicRegistryManager;
+          import net.minecraft.text.Text;
+
+          import java.util.*;
+
+          public class KitPreviewScreen extends Screen {
+              private final Screen parent;
+              private String selectedKit;
+              private TextFieldWidget nameBox;
+              private String statusMsg = "§7Previewing kit slots (Armor, Off-hand, Inventory, Hotbar)";
+              private final Map<Integer, ItemStack> previewItems = new HashMap<>();
+              private List<String> kitList = new ArrayList<>();
+              private int tabPage = 0;
+
+              public KitPreviewScreen(Screen parent, String initialKit) {
+                  super(Text.literal("Moin Kit Preview"));
+                  this.parent = parent;
+                  this.kitList = new ArrayList<>(KitConfig.data.kits.keySet());
+                  if (initialKit != null && KitConfig.data.kits.containsKey(initialKit.toLowerCase(Locale.ROOT))) {
+                      this.selectedKit = initialKit.toLowerCase(Locale.ROOT);
+                  } else if (!this.kitList.isEmpty()) {
+                      this.selectedKit = this.kitList.get(0);
+                  } else {
+                      this.selectedKit = "cpvp";
+                  }
+              }
+
+              private void rebuildSlots() {
+                  previewItems.clear();
+                  KitConfig.KitEntry kit = KitConfig.data.kits.get(selectedKit);
+                  if (kit == null) return;
+                  MinecraftClient mc = MinecraftClient.getInstance();
+                  DynamicRegistryManager reg = (mc != null && mc.world != null) ? mc.world.getRegistryManager() : null;
+                  for (KitConfig.SlotItem s : kit.items) {
+                      previewItems.put(s.slot, KitConfig.buildStack(s, reg));
+                  }
+              }
+
+              @Override
+              protected void init() {
+                  this.kitList = new ArrayList<>(KitConfig.data.kits.keySet());
+                  if ((this.selectedKit == null || !this.kitList.contains(this.selectedKit)) && !this.kitList.isEmpty()) {
+                      this.selectedKit = this.kitList.get(0);
+                  }
+                  rebuildSlots();
+
+                  int cx = this.width / 2;
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("← Back"), b -> {
+                      SoundHelper.playDrawerClose();
+                      this.close();
+                  }).dimensions(10, 8, 56, 20).build());
+
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("Reset 10 Kits"), b -> {
+                      KitConfig.createDefaultKits();
+                      SoundHelper.playSave();
+                      statusMsg = "§aRestored all 10 pre-made kits!";
+                      this.clearAndInit();
+                  }).dimensions(this.width - 92, 8, 82, 20).build());
+
+                  int perPage = 5;
+                  int totalPages = Math.max(1, (int) Math.ceil(kitList.size() / (double) perPage));
+                  if (tabPage >= totalPages) tabPage = 0;
+
+                  int start = tabPage * perPage;
+                  int end = Math.min(kitList.size(), start + perPage);
+                  int tabW = 54;
+                  int startX = cx - ((end - start) * (tabW + 3)) / 2;
+
+                  if (totalPages > 1) {
+                      this.addDrawableChild(ButtonWidget.builder(Text.literal("<"), b -> {
+                          tabPage = (tabPage + totalPages - 1) % totalPages;
+                          SoundHelper.playSelect();
+                          this.clearAndInit();
+                      }).dimensions(startX - 22, 32, 18, 18).build());
+                  }
+
+                  for (int i = start; i < end; i++) {
+                      String kName = kitList.get(i);
+                      boolean active = kName.equals(selectedKit);
+                      this.addDrawableChild(ButtonWidget.builder(Text.literal(active ? "§e[" + kName + "]" : kName), b -> {
+                          this.selectedKit = kName;
+                          if (this.nameBox != null) this.nameBox.setText(kName);
+                          SoundHelper.playPreview();
+                          rebuildSlots();
+                          this.clearAndInit();
+                      }).dimensions(startX + (i - start) * (tabW + 3), 32, tabW, 18).build());
+                  }
+
+                  if (totalPages > 1) {
+                      this.addDrawableChild(ButtonWidget.builder(Text.literal(">"), b -> {
+                          tabPage = (tabPage + 1) % totalPages;
+                          SoundHelper.playSelect();
+                          this.clearAndInit();
+                      }).dimensions(startX + (end - start) * (tabW + 3) + 3, 32, 18, 18).build());
+                  }
+
+                  int bottomY = this.height - 32;
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("§a✔ Load Kit"), b -> {
+                      statusMsg = KitConfig.loadKit(this.client, selectedKit);
+                  }).dimensions(cx - 165, bottomY, 76, 20).build());
+
+                  this.nameBox = new TextFieldWidget(this.textRenderer, cx - 84, bottomY, 80, 20, Text.literal("Kit Name"));
+                  this.nameBox.setText(selectedKit != null ? selectedKit : "mykit");
+                  this.addDrawableChild(this.nameBox);
+
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("§b📚 Save Kit"), b -> {
+                      String target = nameBox.getText().trim();
+                      statusMsg = KitConfig.saveKit(this.client, target);
+                      this.selectedKit = target.isEmpty() ? selectedKit : target.toLowerCase(Locale.ROOT);
+                      this.clearAndInit();
+                  }).dimensions(cx + 1, bottomY, 82, 20).build());
+
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("§cDelete"), b -> {
+                      if (selectedKit != null && KitConfig.data.kits.remove(selectedKit) != null) {
+                          KitConfig.save();
+                          SoundHelper.playDelete();
+                          statusMsg = "§eDeleted kit '" + selectedKit + "'.";
+                          this.selectedKit = null;
+                          this.clearAndInit();
+                      } else {
+                          SoundHelper.playError();
+                      }
+                  }).dimensions(cx + 88, bottomY, 64, 20).build());
+              }
+
+              @Override
+              public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+                  context.fill(0, 0, this.width, this.height, 0xC80F131A);
+                  super.render(context, mouseX, mouseY, delta);
+
+                  int cx = this.width / 2;
+                  context.drawCenteredTextWithShadow(this.textRenderer, "§6§lMoin Kit Preview: §e" + (selectedKit != null ? selectedKit.toUpperCase(Locale.ROOT) : "NONE"), cx, 12, 0xFFFFFF);
+                  context.drawCenteredTextWithShadow(this.textRenderer, statusMsg, cx, this.height - 48, 0xFFFFFF);
+
+                  int slotSize = 18;
+                  int gridStartX = cx - (9 * slotSize) / 2;
+                  int startY = 60;
+                  ItemStack hovered = ItemStack.EMPTY;
+
+                  int[] equipSlots = {39, 38, 37, 36, 40};
+                  String[] labels = {"H", "C", "L", "B", "Off"};
+                  int equipX = cx - (5 * (slotSize + 4)) / 2;
+                  for (int i = 0; i < equipSlots.length; i++) {
+                      int sx = equipX + i * (slotSize + 4);
+                      ItemStack st = drawSlot(context, sx, startY, equipSlots[i], labels[i], mouseX, mouseY, 0xFF28354A);
+                      if (!st.isEmpty()) hovered = st;
+                  }
+
+                  int invY = startY + 24;
+                  for (int r = 0; r < 3; r++) {
+                      for (int c = 0; c < 9; c++) {
+                          int idx = 9 + r * 9 + c;
+                          ItemStack st = drawSlot(context, gridStartX + c * slotSize, invY + r * slotSize, idx, null, mouseX, mouseY, 0xFF1D222B);
+                          if (!st.isEmpty()) hovered = st;
+                      }
+                  }
+
+                  int hotbarY = invY + 3 * slotSize + 5;
+                  for (int c = 0; c < 9; c++) {
+                      ItemStack st = drawSlot(context, gridStartX + c * slotSize, hotbarY, c, String.valueOf(c + 1), mouseX, mouseY, 0xFF253040);
+                      if (!st.isEmpty()) hovered = st;
+                  }
+
+                  if (!hovered.isEmpty()) {
+                      context.drawItemTooltip(this.textRenderer, hovered, mouseX, mouseY);
+                  }
+              }
+
+              private ItemStack drawSlot(DrawContext context, int x, int y, int slot, String hint, int mouseX, int mouseY, int bg) {
+                  boolean hover = mouseX >= x && mouseX < x + 18 && mouseY >= y && mouseY < y + 18;
+                  context.fill(x, y, x + 17, y + 17, hover ? 0xFF4A6FA5 : bg);
+                  context.drawStrokedRectangle(x, y, 17, 17, hover ? 0xFFFFD700 : 0xFF4F5D75);
+                  ItemStack st = previewItems.getOrDefault(slot, ItemStack.EMPTY);
+                  if (!st.isEmpty()) {
+                      context.drawItem(st, x + 1, y + 1);
+                      context.drawStackOverlay(this.textRenderer, st, x + 1, y + 1);
+                      return hover ? st : ItemStack.EMPTY;
+                  } else if (hint != null) {
+                      context.drawCenteredTextWithShadow(this.textRenderer, "§8" + hint, x + 9, y + 5, 0x666666);
+                  }
+                  return ItemStack.EMPTY;
+              }
+
+              @Override
+              public void close() {
+                  if (this.client != null) {
+                      this.client.setScreen(this.parent);
+                  }
+              }
+
+              @Override
+              public boolean shouldPause() {
+                  return false;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/mixin/InventoryScreenMixin.java
+          package com.moin.mixin;
+
+          import com.moin.KitDrawerController;
+          import net.minecraft.client.gui.Click;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.ingame.HandledScreen;
+          import net.minecraft.client.gui.screen.ingame.InventoryScreen;
+          import net.minecraft.entity.player.PlayerInventory;
+          import net.minecraft.screen.PlayerScreenHandler;
+          import net.minecraft.text.Text;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(InventoryScreen.class)
+          public abstract class InventoryScreenMixin extends HandledScreen<PlayerScreenHandler> {
+              protected InventoryScreenMixin(PlayerScreenHandler handler, PlayerInventory inventory, Text title) {
+                  super(handler, inventory, title);
+              }
+
+              @Inject(method = "render", at = @At("TAIL"))
+              private void moin$renderDrawer(DrawContext context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+                  KitDrawerController.render(this, context, this.x, this.y, this.backgroundWidth, mouseX, mouseY);
+              }
+
+              @Inject(method = "mouseClicked", at = @At("HEAD"), cancellable = true)
+              private void moin$mouseClicked(Click click, boolean doubleClick, CallbackInfoReturnable<Boolean> cir) {
+                  if (KitDrawerController.mouseClicked(this, this.x, this.y, this.backgroundWidth, click.x(), click.y(), click.button())) {
+                      cir.setReturnValue(true);
+                  }
+              }
+
+              @Override
+              public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+                  if (KitDrawerController.mouseScrolled(this, this.x, this.y, this.backgroundWidth, mouseX, mouseY, verticalAmount)) {
+                      return true;
+                  }
+                  return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/moin/mixin/CreativeInventoryScreenMixin.java
+          package com.moin.mixin;
+
+          import com.moin.KitDrawerController;
+          import net.minecraft.client.gui.Click;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.ingame.CreativeInventoryScreen;
+          import net.minecraft.client.gui.screen.ingame.HandledScreen;
+          import net.minecraft.entity.player.PlayerInventory;
+          import net.minecraft.text.Text;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(CreativeInventoryScreen.class)
+          public abstract class CreativeInventoryScreenMixin extends HandledScreen<CreativeInventoryScreen.CreativeScreenHandler> {
+              protected CreativeInventoryScreenMixin(CreativeInventoryScreen.CreativeScreenHandler handler, PlayerInventory inventory, Text title) {
+                  super(handler, inventory, title);
+              }
+
+              @Inject(method = "render", at = @At("TAIL"))
+              private void moin$renderDrawer(DrawContext context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
+                  KitDrawerController.render(this, context, this.x, this.y, this.backgroundWidth, mouseX, mouseY);
+              }
+
+              @Inject(method = "mouseClicked", at = @At("HEAD"), cancellable = true)
+              private void moin$mouseClicked(Click click, boolean doubleClick, CallbackInfoReturnable<Boolean> cir) {
+                  if (KitDrawerController.mouseClicked(this, this.x, this.y, this.backgroundWidth, click.x(), click.y(), click.button())) {
+                      cir.setReturnValue(true);
+                  }
+              }
+
+              @Override
+              public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+                  if (KitDrawerController.mouseScrolled(this, this.x, this.y, this.backgroundWidth, mouseX, mouseY, verticalAmount)) {
+                      return true;
+                  }
+                  return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+              }
+          }
+          EOF
+
+      - name: Build Single Universal Jar
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Upload Single Universal Jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: moin-1.0.0-mc1.21.11+26.3
+          path: |
+            build/libs/moin-1.0.0-mc1.21.11+26.3.jar
